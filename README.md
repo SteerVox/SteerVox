@@ -11,7 +11,7 @@ It is designed to stay light and local-first:
 - your recording is captured on your Mac
 - simple formatting tasks can stay local
 - Smart Mode only uses the smallest context needed
-- notes, settings, skills, and logs are stored locally
+- notes, settings, templates, and logs are stored locally
 
 ## What You Can Do With It
 
@@ -19,57 +19,88 @@ It is designed to stay light and local-first:
 - Use Smart Mode to rewrite what you said before it is pasted
 - Work from selected text or clipboard text when you say things like `summarize this`
 - Save spoken ideas or rewritten output into Notes instead of pasting them
-- Use built-in skills for email, team chat, code help, tickets, summaries, social posts, and more
-- Set different default skills for different apps or websites
+- Use built-in templates for email, team chat, code help, tickets, summaries, social posts, and more
+- Set different default templates for different apps or websites
 - Add local dictionary entries, replacements, and snippets that run after transcription
 - Let Smart Mode auto-learn lightweight preferences, facts, and term swaps in a local memory store
-- Edit Shipping and Medical domain packs locally in Preferences
+- Edit Shipping and Medical domain packs locally in Settings
 - Review text-only history and reprocess past runs without storing audio
 - Tighten privacy with sensitive-target rules and clipboard restore
 
 ## Screen Gallery
 
-### Preferences
+### Home
 
 <p align="center">
-  <img src="assets/screenshots/preferences-screen.png" width="100%" alt="SteerVox Preferences screen">
+  <img src="assets/screenshots/home-screen.png" width="100%" alt="SteerVox Home screen">
 </p>
 
-### Skills
+### Settings
 
 <table>
   <tr>
     <td width="50%">
-      <img src="assets/screenshots/skills-library-screen.png" width="100%" alt="SteerVox Skills library screen">
+      <img src="assets/screenshots/preferences-screen.png" width="100%" alt="SteerVox Voice settings screen">
     </td>
     <td width="50%">
-      <img src="assets/screenshots/skill-editor-screen.png" width="100%" alt="SteerVox skill editor screen">
+      <img src="assets/screenshots/settings-smart-screen.png" width="100%" alt="SteerVox Smart settings screen">
     </td>
   </tr>
   <tr>
-    <td align="center"><sub>Skills library</sub></td>
-    <td align="center"><sub>Custom skill editor</sub></td>
+    <td align="center"><sub>Voice capture, readiness, and active providers</sub></td>
+    <td align="center"><sub>Smart providers, models, and default template</sub></td>
   </tr>
 </table>
 
-### Notes And Widget
+### Templates
 
 <table>
   <tr>
-    <td width="65%">
-      <img src="assets/screenshots/notes-screen.png" width="100%" alt="SteerVox Notes screen">
+    <td width="50%">
+      <img src="assets/screenshots/skills-library-screen.png" width="100%" alt="SteerVox template library screen">
     </td>
-    <td width="35%">
-      <img src="assets/screenshots/widget-idle-screen.png" width="100%" alt="SteerVox widget idle state">
-      <br><br>
-      <img src="assets/screenshots/widget-dictation-screen.png" width="100%" alt="SteerVox widget dictation state">
-      <br><br>
-      <img src="assets/screenshots/widget-smart-screen.png" width="100%" alt="SteerVox widget smart mode state">
+    <td width="50%">
+      <img src="assets/screenshots/skill-editor-screen.png" width="100%" alt="SteerVox custom template editor screen">
     </td>
   </tr>
   <tr>
-    <td align="center"><sub>Notes window</sub></td>
-    <td align="center"><sub>Widget states</sub></td>
+    <td align="center"><sub>Template library</sub></td>
+    <td align="center"><sub>Create a custom template</sub></td>
+  </tr>
+</table>
+
+### Library
+
+<p align="center">
+  <img src="assets/screenshots/notes-screen.png" width="100%" alt="SteerVox Library screen">
+</p>
+
+### Widget
+
+<table>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshots/widget-template-picker-screen.png" width="100%" alt="SteerVox widget template picker">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshots/widget-idle-screen.png" width="100%" alt="SteerVox widget domain mode picker">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Template picker in the floating widget</sub></td>
+    <td align="center"><sub>Domain mode picker in the floating widget</sub></td>
+  </tr>
+  <tr>
+    <td width="50%">
+      <img src="assets/screenshots/widget-dictation-screen.png" width="100%" alt="SteerVox widget dictation live transcript">
+    </td>
+    <td width="50%">
+      <img src="assets/screenshots/widget-smart-screen.png" width="100%" alt="SteerVox widget smart live transcript">
+    </td>
+  </tr>
+  <tr>
+    <td align="center"><sub>Dictation live transcript</sub></td>
+    <td align="center"><sub>Smart live transcript</sub></td>
   </tr>
 </table>
 
@@ -84,27 +115,11 @@ It is designed to stay light and local-first:
 ```text
 SteerVox/
 ├── backend/                  # Local Python service for speech, Smart Mode, settings, and notes
-├── docs/                     # Code-grounded flow and capability references
 ├── frontend/                 # Electron app and React screens
 ├── scripts/build-mac.sh      # macOS release build script
 ├── scripts/prepare-mac-assets.sh
 └── assets/                   # Branding and screenshots
 ```
-
-## Documentation
-
-Code-grounded references in this repo:
-
-- `docs/system-reference.md` for the full runtime, schema, storage, API, and flow reference
-- `docs/local-flow.md` for the short backend and Smart Mode flow summary
-- `docs/local-app-capabilities.md` for the short app, site, target-type, and domain capability summary
-- `docs/local-vs-provider-flow.md` for what stays on device versus what is sent to providers
-- `docs/end-user-capabilities.md` for an end-user view of the features in the app
-- `docs/memory-and-writing-tools.md` for the local memory and writing tools reference, limits, and QA checklist
-- `docs/release-readiness.md` for the direct-download release checklist and Mac App Store blocker matrix
-- `docs/manual-qa-scenarios.md` for hands-on smoke checks before a release
-- `docs/branding-change-guide.md` for the branding/name inventory and rename effort guide
-- `docs/issues/` for incident-style writeups of recent fixes and hardening passes
 
 ## Before You Start
 
@@ -204,7 +219,7 @@ After launch:
 
 - the app appears in the menu bar
 - the floating widget starts hidden
-- you can open Preferences from the tray menu
+- you can open Settings from the tray menu
 - `Ctrl + D` starts Dictation
 - `Ctrl + T` starts Smart Mode
 
@@ -220,7 +235,7 @@ Smart Mode does more than basic dictation. It can:
 
 - clean up phrasing
 - rewrite your text for a specific purpose
-- use a built-in or custom skill
+- use a built-in or custom template
 - apply optional Shipping or Medical domain packs
 - work from selected text or clipboard text when your command refers to it
 - save the result to Notes instead of pasting it
@@ -258,7 +273,7 @@ Domain packs and imported overlays stay on your Mac. They are not uploaded as a 
 
 ## Local Writing Tools
 
-Preferences includes three local writing tools that run after transcription:
+Settings includes three local writing tools that run after transcription:
 
 - `Dictionary` for one canonical output plus the spoken aliases or common mishearings that should resolve to it
 - `Replacements` for deterministic phrase rewrites
@@ -275,17 +290,17 @@ Per-entry safety limits keep the store predictable on long-running installs:
 - snippet expansion up to 8192 characters
 - text-only run history capped at 1000 rows with the oldest pruned automatically
 
-The matching pipeline, retrieval rules, and full safety/limits list live in `docs/memory-and-writing-tools.md`.
+The matching pipeline, retrieval rules, and safety limits are implemented in `backend/writing_memory.py` and exercised by tests under `backend/tests/`.
 
 ## Local Memory
 
 Smart Mode keeps a small local memory store at `~/.steervox/local_memory.sqlite3`. It can capture lightweight preferences, facts, projects, and term swaps that you mention during dictation, then surface a few relevant lines as extra context on later Smart runs in the same scope (app, browser host, or domain).
 
-Memory is opt-in from Preferences > Memory. Nothing is uploaded as a separate dataset, scope matching is case-insensitive, retrieval is bounded by a per-prompt character budget, and you can review or delete entries through the `/memories` API or by clearing the SQLite file. See `docs/memory-and-writing-tools.md` for the full lifecycle, retrieval scoring, and known limitations.
+Memory is opt-in from Settings. Nothing is uploaded as a separate dataset, scope matching is case-insensitive, retrieval is bounded by a per-prompt character budget, and you can review or delete entries through the `/memories` API or by clearing the SQLite file.
 
 ## Domain Controls
 
-Shipping and Medical packs can now be edited directly in Preferences.
+Shipping and Medical packs can now be edited directly in Settings.
 
 For each pack you can adjust:
 
@@ -313,7 +328,7 @@ Audio is not stored in this history.
 
 ## Privacy Controls
 
-Preferences also includes local privacy controls for:
+Settings also includes local privacy controls for:
 
 - restoring the previous clipboard after paste
 - reducing Smart Mode context for sensitive apps or websites
@@ -326,7 +341,7 @@ Medical defaults start more conservatively by minimizing captured context and su
 Smart Mode follows a local-first flow:
 
 1. it decides whether the result should be pasted or saved to Notes
-2. it can activate a Shipping or Medical domain pack from local rules or your Preferences
+2. it can activate a Shipping or Medical domain pack from local rules or your Settings
 3. it picks the right skill for the current app or site
 4. it tries local routing rules first
 5. if the request is still unclear, it can use Groq Compound Mini as a fallback router
@@ -346,12 +361,9 @@ Important behavior:
 
 If you want the code-level reference, start with:
 
-- `docs/system-reference.md`
-
-Companion summaries:
-
-- `docs/local-flow.md`
-- `docs/local-app-capabilities.md`
+- `backend/engine.py`
+- `backend/agent/processor.py`
+- `backend/action_routing.py`
 
 ## Skills
 
@@ -512,7 +524,7 @@ export APPLE_TEAM_ID="TEAMID"
 
 Without those values, the build can still complete locally with ad-hoc signing for testing.
 
-For the current public release track, use the direct-download build path in `docs/release-readiness.md`. The repo does not yet produce a Mac App Store submission build.
+For the current public release track, use the direct-download DMG build path described in this README. The repo does not yet produce a Mac App Store submission build.
 
 ## Logs And Local Data
 
