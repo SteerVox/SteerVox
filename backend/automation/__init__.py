@@ -1,0 +1,1 @@
+"""Privileged desktop automation helpers."""

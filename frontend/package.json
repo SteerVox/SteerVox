@@ -1,0 +1,145 @@
+{
+  "name": "frontend",
+  "private": true,
+  "version": "1.0.1",
+  "description": "SteerVox desktop voice control application",
+  "author": "SteerVox",
+  "type": "module",
+  "main": "dist-electron/main.js",
+  "scripts": {
+    "predev": "node scripts/prepare-dev.mjs",
+    "dev": "vite",
+    "prepare:mac-assets": "bash ../scripts/prepare-mac-assets.sh",
+    "prepare:ffmpeg-runtime": "node scripts/prepare-ffmpeg-runtime.mjs",
+    "refresh:mac-assets": "npm run prepare:mac-assets && npm run validate:mac-assets",
+    "validate:mac-assets": "bash ../scripts/validate-mac-assets.sh",
+    "build:local-speech-helper": "node scripts/build-local-speech-helper.mjs",
+    "build:system-control-helper": "node scripts/build-system-control-helper.mjs",
+    "build": "npm run branding:validate && npm run validate:mac-assets && npm run build:local-speech-helper && npm run build:system-control-helper && npm run package:desktop",
+    "build:mac": "bash ../scripts/build-mac.sh",
+    "lint": "eslint .",
+    "test": "vitest run",
+    "preview": "vite preview",
+    "branding:sync": "node ../scripts/sync-branding.mjs",
+    "branding:validate": "node ../scripts/validate-branding.mjs",
+    "package:desktop": "npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder",
+    "package:desktop:mac": "npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder --mac dmg --arm64"
+  },
+  "build": {
+    "appId": "com.steervox.app",
+    "productName": "SteerVox",
+    "afterPack": "scripts/after-pack.mjs",
+    "afterSign": "scripts/notarize.mjs",
+    "mac": {
+      "target": [
+        {
+          "target": "dmg",
+          "arch": [
+            "arm64"
+          ]
+        }
+      ],
+      "icon": "build/icon.icns",
+      "category": "public.app-category.productivity",
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "electron/entitlements.mac.plist",
+      "entitlementsInherit": "electron/entitlements.mac.inherit.plist",
+      "extendInfo": {
+        "LSUIElement": true,
+        "NSMicrophoneUsageDescription": "SteerVox needs microphone access to transcribe your speech.",
+        "NSSpeechRecognitionUsageDescription": "SteerVox needs speech recognition access to show a live transcript while you speak.",
+        "NSAppleEventsUsageDescription": "SteerVox uses Automation to read the frontmost app and supported browser tab metadata for Smart Mode."
+      }
+    },
+    "dmg": {
+      "title": "SteerVox",
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "files": [
+      "package.json",
+      {
+        "from": "dist/renderer",
+        "to": "dist/renderer",
+        "filter": [
+          "**/*",
+          "!**/*.map"
+        ]
+      },
+      {
+        "from": "dist-electron",
+        "to": "dist-electron",
+        "filter": [
+          "**/*",
+          "!**/*.map"
+        ]
+      }
+    ],
+    "extraResources": [
+      {
+        "from": "../backend/dist/steervox-engine",
+        "to": "steervox-engine"
+      },
+      {
+        "from": "../frontend/build/ffmpeg-runtime",
+        "to": "ffmpeg"
+      },
+      {
+        "from": "../frontend/native/bin/steervox-local-speech-helper",
+        "to": "steervox-local-speech-helper/steervox-local-speech-helper"
+      },
+      {
+        "from": "../frontend/native/bin/steervox-system-control-helper",
+        "to": "steervox-system-control-helper/steervox-system-control-helper"
+      }
+    ]
+  },
+  "dependencies": {
+    "framer-motion": "^12.35.2",
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router-dom": "^6.30.3"
+  },
+  "devDependencies": {
+    "@electron/notarize": "^3.1.1",
+    "@eslint/js": "^9.39.1",
+    "@tailwindcss/vite": "^4.2.1",
+    "@testing-library/jest-dom": "^6.9.1",
+    "@testing-library/react": "^16.3.2",
+    "@types/node": "^24.10.1",
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "electron": "^40.8.0",
+    "electron-builder": "^26.8.1",
+    "eslint": "^9.39.1",
+    "eslint-plugin-react-hooks": "^7.0.1",
+    "eslint-plugin-react-refresh": "^0.4.24",
+    "ffmpeg-static": "^5.3.0",
+    "ffprobe-static": "^3.1.0",
+    "globals": "^16.5.0",
+    "jsdom": "^29.0.1",
+    "tailwindcss": "^4.2.1",
+    "typescript": "~5.9.3",
+    "typescript-eslint": "^8.48.0",
+    "vite": "^7.3.1",
+    "vite-plugin-electron": "^0.29.0",
+    "vite-plugin-electron-renderer": "^0.14.6",
+    "vitest": "^4.1.1"
+  },
+  "overrides": {
+    "flatted": "3.4.2",
+    "picomatch": "4.0.4"
+  }
+}

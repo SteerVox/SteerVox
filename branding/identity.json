@@ -1,0 +1,49 @@
+{
+  "displayName": "SteerVox",
+  "legalName": "SteerVox",
+  "author": "SteerVox",
+  "copyrightHolder": "SteerVox",
+  "tagline": "Voice control for Dictate, Rewrite, and Notes",
+  "description": "SteerVox desktop voice control application",
+  "backendTitle": "SteerVox Backend",
+  "healthMessage": "SteerVox is running",
+  "windowTitles": {
+    "main": "SteerVox",
+    "about": "About SteerVox"
+  },
+  "packaging": {
+    "appId": "com.steervox.app",
+    "dmgTitle": "SteerVox",
+    "microphoneUsageDescription": "SteerVox needs microphone access to transcribe your speech.",
+    "speechRecognitionUsageDescription": "SteerVox needs speech recognition access to show a live transcript while you speak.",
+    "automationUsageDescription": "SteerVox uses Automation to read the frontmost app and supported browser tab metadata for Smart Mode."
+  },
+  "runtime": {
+    "slug": "steervox",
+    "protocolScheme": "steervox",
+    "backendExecutableName": "steervox-engine",
+    "backendResourceDirName": "steervox-engine",
+    "captureProcessorName": "steervox-capture-processor",
+    "loggerName": "SteerVox"
+  },
+  "storage": {
+    "homeDirName": ".steervox",
+    "homeEnvVar": "STEERVOX_HOME",
+    "backendPortEnvVar": "STEERVOX_BACKEND_PORT",
+    "backendUrlEnvVar": "STEERVOX_BACKEND_URL",
+    "smokePortEnvVar": "STEERVOX_SMOKE_PORT",
+    "backendLogFileName": "app.log",
+    "electronLogFileName": "electron.log",
+    "fallbackLogFileName": "steervox-app.log"
+  },
+  "assets": {
+    "appIconPng": "frontend/public/app-icon.png",
+    "brandMarkPng": "frontend/public/brand-mark.png",
+    "logoMarkPng": "frontend/public/logo-mark.png",
+    "trayMarkPng": "frontend/public/tray-mark.png",
+    "trayTemplatePng": "frontend/public/tray-iconTemplate.png",
+    "buildIconPng": "frontend/build/icon.png",
+    "buildIconIcns": "frontend/build/icon.icns",
+    "assetLogoPng": "assets/logo.png"
+  }
+}

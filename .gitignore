@@ -1,0 +1,39 @@
+# macOS Environment
+.DS_Store
+
+# User Exclusions
+.agents/
+Project Management/
+
+# Node Environment
+node_modules/
+.npm/
+
+# Python Environment
+.venv/
+__pycache__/
+*.pyc
+
+# Distribution / Build Outputs
+dist/
+dist-electron/
+release/
+releases/
+build/
+*.spec
+
+# IDEs
+.vscode/
+.idea/
+
+# Local Secrets
+.env
+.env.local
+.env_secrets
+
+# Local Product Notes
+LOCAL_APP_CAPABILITIES.md
+docs/
+
+scripts/generate-brand-assets.swift
+scripts/prepare-mac-assets.sh

@@ -1,0 +1,73 @@
+{
+  "id": "medical",
+  "label": "Medical / Clinical Documentation",
+  "description": "Documentation-focused terminology, templates, and examples for clinical notes, handoffs, and visit summaries.",
+  "documentation_only": true,
+  "default_intent": "clinical_note_draft",
+  "glossary": [
+    { "term": "BP", "aliases": ["bp", "b p"], "kind": "abbreviation", "priority": 100 },
+    { "term": "HR", "aliases": ["hr", "h r"], "kind": "abbreviation", "priority": 100 },
+    { "term": "SOB", "aliases": ["sob", "s o b"], "kind": "abbreviation", "priority": 90 },
+    { "term": "PRN", "aliases": ["prn", "p r n"], "kind": "abbreviation", "priority": 90 },
+    { "term": "BID", "aliases": ["bid", "b i d"], "kind": "abbreviation", "priority": 90 },
+    { "term": "TID", "aliases": ["tid", "t i d"], "kind": "abbreviation", "priority": 90 },
+    { "term": "HPI", "aliases": ["hpi", "h p i"], "kind": "abbreviation", "priority": 100 },
+    { "term": "ROS", "aliases": ["ros", "r o s"], "kind": "abbreviation", "priority": 100 },
+    { "term": "Dx", "aliases": ["dx", "d x"], "kind": "abbreviation", "priority": 90 },
+    { "term": "Rx", "aliases": ["rx", "r x"], "kind": "abbreviation", "priority": 90 },
+    { "term": "follow-up", "aliases": ["follow up"], "kind": "phrase", "priority": 70 },
+    { "term": "care team", "aliases": ["careteam"], "kind": "phrase", "priority": 60 }
+  ],
+  "templates": [
+    {
+      "id": "clinical_note_template",
+      "label": "Clinical note draft",
+      "intent": "clinical_note_draft",
+      "body": "Use a structured note with short sections such as HPI, assessment details already stated by the user, and plan or follow-up items. Keep it documentation-focused and do not add medical judgment that was not spoken.",
+      "priority": 100
+    },
+    {
+      "id": "handoff_template",
+      "label": "Referral or handoff note",
+      "intent": "referral_handoff_note",
+      "body": "Summarize the handoff reason, current status, key documentation points, and next action for the receiving team. Keep it concise and section-based.",
+      "priority": 100
+    },
+    {
+      "id": "visit_summary_template",
+      "label": "Discharge or visit summary",
+      "intent": "discharge_visit_summary",
+      "body": "Use short sections for visit reason, major events, instructions already given, and follow-up. Keep the wording clear and patient-safe without adding diagnosis or treatment advice.",
+      "priority": 95
+    }
+  ],
+  "examples": [
+    {
+      "id": "clinical_note_example",
+      "label": "Clinical note example",
+      "intent": "clinical_note_draft",
+      "output": "HPI: Patient reports worsening shortness of breath over the last two days with intermittent cough.\nAssessment details: BP and HR reviewed. Symptoms reviewed with the care team.\nFollow-up: Return precautions and follow-up timing were discussed.",
+      "priority": 100
+    },
+    {
+      "id": "handoff_note_example",
+      "label": "Handoff note example",
+      "intent": "referral_handoff_note",
+      "output": "Referral summary: sending for specialist follow-up after ongoing symptoms.\nCurrent status: recent visit completed and notes updated.\nNext step: receiving team to review documentation and schedule follow-up.",
+      "priority": 90
+    }
+  ],
+  "styles": {
+    "tone": "concise, structured, documentation-first",
+    "safety_note": "do not add diagnosis or treatment recommendations",
+    "format": "short sections, high signal, review-friendly"
+  },
+  "controls": {
+    "default_format": "paragraph",
+    "default_surface_behavior": "note",
+    "suppress_external_text": true,
+    "minimize_context_capture": true,
+    "tone": "structured documentation",
+    "audience": "clinical documentation teams"
+  }
+}

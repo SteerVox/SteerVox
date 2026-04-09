@@ -1,0 +1,80 @@
+{
+  "id": "shipping",
+  "label": "Shipping / Logistics",
+  "description": "Templates, glossary terms, and examples for freight, dispatch, warehouse, and customer shipment updates.",
+  "documentation_only": false,
+  "default_intent": "shipment_update",
+  "glossary": [
+    { "term": "ETA", "aliases": ["eta", "e t a"], "kind": "acronym", "priority": 100 },
+    { "term": "ETD", "aliases": ["etd", "e t d"], "kind": "acronym", "priority": 100 },
+    { "term": "POD", "aliases": ["pod", "p o d"], "kind": "acronym", "priority": 90 },
+    { "term": "ASN", "aliases": ["asn", "a s n"], "kind": "acronym", "priority": 90 },
+    { "term": "BOL", "aliases": ["bol", "b o l", "bill of lading"], "kind": "acronym", "priority": 100 },
+    { "term": "FCL", "aliases": ["fcl", "f c l"], "kind": "acronym", "priority": 90 },
+    { "term": "LCL", "aliases": ["lcl", "l c l"], "kind": "acronym", "priority": 90 },
+    { "term": "AWB", "aliases": ["awb", "a w b", "air waybill"], "kind": "acronym", "priority": 90 },
+    { "term": "FOB", "aliases": ["fob", "f o b"], "kind": "acronym", "priority": 80 },
+    { "term": "CIF", "aliases": ["cif", "c i f"], "kind": "acronym", "priority": 80 },
+    { "term": "container number", "aliases": ["container no", "container ref"], "kind": "reference", "priority": 70 },
+    { "term": "shipment ID", "aliases": ["shipment id", "shipment reference"], "kind": "reference", "priority": 70 }
+  ],
+  "templates": [
+    {
+      "id": "shipment_update_email",
+      "label": "Shipment update",
+      "intent": "shipment_update",
+      "body": "Start with the shipment status, then note location, next milestone, ETA or ETD, and any blocker. Keep it concise and customer-friendly.",
+      "priority": 100
+    },
+    {
+      "id": "delay_notification_email",
+      "label": "Delay notification",
+      "intent": "delay_notification",
+      "body": "State the delay clearly, explain the operational reason without over-speculating, give the updated ETA when available, and close with the next step or follow-up time.",
+      "priority": 100
+    },
+    {
+      "id": "operations_handoff_note",
+      "label": "Operations handoff",
+      "intent": "operations_note",
+      "body": "Use short bullets for issue, current status, next action, owner, and timing. Prefer operational shorthand over prose.",
+      "priority": 90
+    },
+    {
+      "id": "exception_summary",
+      "label": "Incident summary",
+      "intent": "incident_exception_summary",
+      "body": "Summarize the exception, the impact, what has already been checked, and the next action. Keep it direct and structured.",
+      "priority": 90
+    }
+  ],
+  "examples": [
+    {
+      "id": "delay_notification_example",
+      "label": "Delay notification example",
+      "intent": "delay_notification",
+      "output": "Shipment update: the container is running behind the original ETA due to port congestion. The revised ETA is tomorrow evening. We are monitoring the vessel closely and will send the next update once discharge is confirmed.",
+      "priority": 100
+    },
+    {
+      "id": "operations_note_example",
+      "label": "Operations note example",
+      "intent": "operations_note",
+      "output": "- Shipment held at customs for document review\n- Broker requested corrected BOL reference\n- Ops team sent updated paperwork\n- Recheck status at 16:00 local",
+      "priority": 90
+    }
+  ],
+  "styles": {
+    "tone": "concise, operational, direct",
+    "customer_voice": "clear and reassuring without sounding defensive",
+    "internal_voice": "short, structured, handoff-ready"
+  },
+  "controls": {
+    "default_format": "auto",
+    "default_surface_behavior": "auto",
+    "suppress_external_text": false,
+    "minimize_context_capture": false,
+    "tone": "concise operational",
+    "audience": "customers and operations teams"
+  }
+}
