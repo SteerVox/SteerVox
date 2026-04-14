@@ -413,6 +413,7 @@ describe('FloatingWidget smart preview', () => {
 
     expect(screen.getByTestId('widget-mode-control')).toHaveTextContent('Template')
     expect(screen.getByTestId('widget-mode-control')).toHaveTextContent('Professional Rewrite')
+    expect(screen.getByRole('option', { name: 'Computer Use' })).toBeInTheDocument()
     expect(screen.queryByText('Internal Hidden Skill')).toBeNull()
   })
 
@@ -446,6 +447,313 @@ describe('FloatingWidget smart preview', () => {
 
     await waitFor(() => {
       expect(apiPostMock).toHaveBeenCalledWith('/actions/review/approve', { run_id: 'review-1' })
+    })
+  })
+
+  it('renders reviewed local task runs inline and posts approve decisions', async () => {
+    runtimeState.snapshot.status = {
+      ...runtimeState.snapshot.status,
+      phase: 'ready',
+      smart_preview: null,
+      pending_action_review: null,
+      pending_review: {
+        id: 'review-local-1',
+        run_id: 'task-1',
+        scope: 'local_task',
+        kind: 'shell_command',
+        title: 'Review local task',
+        summary: 'Run git status',
+        detail: null,
+        command: 'git status',
+        cwd: '/tmp/workspace',
+        risk_level: 'low',
+        status: 'pending',
+        error: null,
+        language: 'shell',
+        script: 'git status',
+      },
+      active_task_run: {
+        run_id: 'task-1',
+        request_text: 'run git status',
+        title: 'Review local task',
+        status: 'pending_review',
+        command: 'git status',
+        cwd: '/tmp/workspace',
+        created_at: '2026-04-10T00:00:00Z',
+        updated_at: '2026-04-10T00:00:00Z',
+        current_step_id: 'step-1',
+        review_required: true,
+        steps: [],
+        output_blocks: [],
+        result_summary: null,
+        error: null,
+      },
+    }
+
+    render(<FloatingWidget />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('widget-action-review')).toHaveTextContent('Run git status')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/tasks/local/review/approve', {
+        run_id: 'task-1',
+        review_id: 'review-local-1',
+      })
+    })
+  })
+
+  it('renders multi-step task plans with ordered steps', async () => {
+    runtimeState.snapshot.status = {
+      ...runtimeState.snapshot.status,
+      phase: 'ready',
+      smart_preview: null,
+      pending_action_review: null,
+      pending_review: {
+        id: 'review-plan-1',
+        run_id: 'task-plan-1',
+        scope: 'local_task',
+        kind: 'task_plan',
+        title: 'Computer Use',
+        summary: 'Execute 2 reviewed steps for: open Finder and search the repo for LocalTaskShellService',
+        detail: '1. [Desktop] Open Finder.\nopen finder\n\n2. [Shell] Run rg -n -- LocalTaskShellService .\nrg -n -- LocalTaskShellService .',
+        command: null,
+        cwd: '/tmp/workspace',
+        risk_level: 'medium',
+        status: 'pending',
+        error: null,
+        language: null,
+        script: '1. [Desktop] Open Finder.\nopen finder\n\n2. [Shell] Run rg -n -- LocalTaskShellService .\nrg -n -- LocalTaskShellService .',
+        step_id: null,
+      },
+      active_task_run: {
+        run_id: 'task-plan-1',
+        request_text: 'open Finder and search the repo for LocalTaskShellService',
+        source_intent: 'computer_use',
+        run_kind: 'multi_step',
+        title: 'Computer Use',
+        plan_summary: 'Execute 2 reviewed steps for: open Finder and search the repo for LocalTaskShellService',
+        status: 'pending_review',
+        command: null,
+        cwd: '/tmp/workspace',
+        created_at: '2026-04-13T00:00:00Z',
+        updated_at: '2026-04-13T00:00:00Z',
+        current_step_id: 'step-1',
+        review_required: true,
+        steps: [
+          {
+            id: 'step-1',
+            kind: 'desktop_action',
+            title: 'Open Finder',
+            summary: 'Open Finder.',
+            status: 'pending',
+            command: null,
+            cwd: null,
+            language: 'applescript',
+            script: 'tell application id "com.apple.finder"\nreopen\nactivate\nend tell',
+            execution_mode: 'reviewed',
+            action_type: 'open_app',
+            started_at: null,
+            completed_at: null,
+            exit_code: null,
+            error: null,
+          },
+          {
+            id: 'step-2',
+            kind: 'shell_command',
+            title: 'Search repo',
+            summary: 'Run rg -n -- LocalTaskShellService .',
+            status: 'pending',
+            command: 'rg -n -- LocalTaskShellService .',
+            cwd: '/tmp/workspace',
+            language: 'shell',
+            script: 'rg -n -- LocalTaskShellService .',
+            started_at: null,
+            completed_at: null,
+            exit_code: null,
+            error: null,
+          },
+        ],
+        output_blocks: [],
+        result_summary: null,
+        error: null,
+      },
+    }
+
+    render(<FloatingWidget />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('widget-task-step-list')).toHaveTextContent('1. Open Finder')
+    })
+
+    expect(screen.getByTestId('widget-action-review')).toHaveTextContent('Review task plan')
+    expect(screen.getByTestId('widget-task-step-list')).toHaveTextContent('2. Search repo')
+  })
+
+  it('renders multi-step progress with current and completed steps', async () => {
+    runtimeState.snapshot.status = {
+      ...runtimeState.snapshot.status,
+      phase: 'ready',
+      is_processing: false,
+      smart_preview: null,
+      pending_action_review: null,
+      pending_review: null,
+      active_task_run: {
+        run_id: 'task-progress-1',
+        request_text: 'open Finder and search the repo for LocalTaskShellService',
+        source_intent: 'computer_use',
+        run_kind: 'multi_step',
+        title: 'Computer Use',
+        plan_summary: 'Execute 2 reviewed steps',
+        status: 'running',
+        command: null,
+        cwd: '/tmp/workspace',
+        created_at: '2026-04-13T00:00:00Z',
+        updated_at: '2026-04-13T00:00:01Z',
+        current_step_id: 'step-2',
+        review_required: true,
+        steps: [
+          {
+            id: 'step-1',
+            kind: 'desktop_action',
+            title: 'Open Finder',
+            summary: 'Open Finder.',
+            status: 'completed',
+            command: null,
+            cwd: null,
+            started_at: '2026-04-13T00:00:00Z',
+            completed_at: '2026-04-13T00:00:00.500Z',
+            exit_code: 0,
+            error: null,
+          },
+          {
+            id: 'step-2',
+            kind: 'shell_command',
+            title: 'Search repo',
+            summary: 'Run rg -n -- LocalTaskShellService .',
+            status: 'running',
+            command: 'rg -n -- LocalTaskShellService .',
+            cwd: '/tmp/workspace',
+            started_at: '2026-04-13T00:00:00.600Z',
+            completed_at: null,
+            exit_code: null,
+            error: null,
+          },
+        ],
+        output_blocks: [{ id: 'out-1', stream: 'stdout', text: 'backend/local_task_shell/service.py:1', truncated: false, updated_at: '2026-04-13T00:00:01Z' }],
+        result_summary: null,
+        error: null,
+      },
+    }
+
+    render(<FloatingWidget />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('widget-task-progress-steps')).toHaveTextContent('1. Open Finder')
+    })
+
+    expect(screen.getByTestId('widget-task-progress-steps')).toHaveTextContent('Done')
+    expect(screen.getByTestId('widget-task-progress-steps')).toHaveTextContent('Running')
+  })
+
+  it('posts retry-mode approvals for failed multi-step tasks', async () => {
+    runtimeState.snapshot.status = {
+      ...runtimeState.snapshot.status,
+      phase: 'ready',
+      smart_preview: null,
+      pending_action_review: null,
+      pending_review: {
+        id: 'review-retry-1',
+        run_id: 'task-retry-1',
+        scope: 'local_task',
+        kind: 'task_retry',
+        title: 'Retry task',
+        summary: 'Search repo failed. Retry from that step or rerun the full plan.',
+        detail: 'Command exited with code 1.',
+        command: null,
+        cwd: '/tmp/workspace',
+        risk_level: 'medium',
+        status: 'pending',
+        error: null,
+        language: null,
+        script: 'Command exited with code 1.',
+        step_id: 'step-2',
+      },
+      active_task_run: {
+        run_id: 'task-retry-1',
+        request_text: 'open Finder and search the repo for LocalTaskShellService',
+        source_intent: 'computer_use',
+        run_kind: 'multi_step',
+        title: 'Computer Use',
+        plan_summary: 'Execute 2 reviewed steps',
+        status: 'pending_review',
+        command: null,
+        cwd: '/tmp/workspace',
+        created_at: '2026-04-13T00:00:00Z',
+        updated_at: '2026-04-13T00:00:02Z',
+        current_step_id: 'step-2',
+        review_required: true,
+        steps: [
+          {
+            id: 'step-1',
+            kind: 'desktop_action',
+            title: 'Open Finder',
+            summary: 'Open Finder.',
+            status: 'completed',
+            command: null,
+            cwd: null,
+            started_at: '2026-04-13T00:00:00Z',
+            completed_at: '2026-04-13T00:00:00.500Z',
+            exit_code: 0,
+            error: null,
+          },
+          {
+            id: 'step-2',
+            kind: 'shell_command',
+            title: 'Search repo',
+            summary: 'Run rg -n -- LocalTaskShellService .',
+            status: 'failed',
+            command: 'rg -n -- LocalTaskShellService .',
+            cwd: '/tmp/workspace',
+            started_at: '2026-04-13T00:00:00.600Z',
+            completed_at: '2026-04-13T00:00:01Z',
+            exit_code: 1,
+            error: 'Command exited with code 1.',
+          },
+        ],
+        output_blocks: [],
+        result_summary: null,
+        error: 'Command exited with code 1.',
+      },
+    }
+
+    render(<FloatingWidget />)
+
+    await waitFor(() => {
+      expect(screen.getByTestId('widget-action-review')).toHaveTextContent('Retry local task')
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Retry step' }))
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/tasks/local/review/approve', {
+        run_id: 'task-retry-1',
+        review_id: 'review-retry-1',
+        retry_mode: 'retry_failed_step',
+      })
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Run from start' }))
+
+    await waitFor(() => {
+      expect(apiPostMock).toHaveBeenCalledWith('/tasks/local/review/approve', {
+        run_id: 'task-retry-1',
+        review_id: 'review-retry-1',
+        retry_mode: 'rerun_all',
+      })
     })
   })
 

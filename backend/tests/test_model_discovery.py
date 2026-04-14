@@ -170,6 +170,16 @@ def test_model_discovery_prefers_groq_turbo_and_mlx_turbo_defaults(monkeypatch):
     assert mlx_models["stt"][0]["id"] == "mlx-community/whisper-large-v3-turbo"
 
 
+def test_model_discovery_enforces_8192_context_floor_for_4b_or_smaller_lmstudio_models():
+    assert ModelDiscovery.lmstudio_is_4b_or_smaller_model("nvidia/nemotron-3-nano-4b") is True
+    assert ModelDiscovery.lmstudio_is_4b_or_smaller_model("qwen2.5-0.5b-instruct-mlx") is True
+    assert ModelDiscovery.lmstudio_is_4b_or_smaller_model("qwen2.5-7b-instruct") is False
+
+    assert ModelDiscovery.lmstudio_resolve_request_context_length("nvidia/nemotron-3-nano-4b", None) == 8192
+    assert ModelDiscovery.lmstudio_resolve_request_context_length("nvidia/nemotron-3-nano-4b", 4096) == 8192
+    assert ModelDiscovery.lmstudio_resolve_request_context_length("qwen2.5-7b-instruct", 4096) == 4096
+
+
 def test_model_discovery_cache_miss_after_api_key_changes(monkeypatch):
     model_discovery._cache.clear()
     current_key = ""

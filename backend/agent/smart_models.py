@@ -4,17 +4,21 @@ from enum import Enum
 from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field
+from local_task_shell.models import LocalTaskStep, TaskRunKind
 
 
 class SmartLane(str, Enum):
     PASSTHROUGH = "passthrough"
     DETERMINISTIC = "deterministic"
     LLM = "llm"
+    REFUSED = "refused"
 
 
 class SmartIntent(str, Enum):
     RAW_DICTATION = "raw_dictation"
     ACTION_EXECUTION = "action_execution"
+    LOCAL_TASK = "local_task"
+    COMPUTER_USE = "computer_use"
     GRAMMAR_CLEANUP = "grammar_cleanup"
     CHAT_REPLY = "chat_reply"
     EMAIL_REWRITE = "email_rewrite"
@@ -27,6 +31,7 @@ class SmartIntent(str, Enum):
     TRANSLATE = "translate"
     WORKFLOW_DESIGN = "workflow_design"
     GENERIC = "generic"
+    LOCAL_UNSUPPORTED = "local_unsupported"
 
 
 class SkillReference(BaseModel):
@@ -71,6 +76,8 @@ class SmartRunTelemetry(BaseModel):
     command_operations_applied: List[str] = Field(default_factory=list)
     format_contract: Optional[str] = None
     surface_contract_applied: bool = False
+    smart_profile: Literal["default", "local_compact"] = "default"
+    profile_limit_reason: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None
     domain_id: Optional[str] = None
@@ -94,6 +101,9 @@ class SmartRunTelemetry(BaseModel):
     llm_timeout_triggered: bool = False
     llm_fallback_applied: bool = False
     llm_fallback_reason: Optional[str] = None
+    structured_output_mode: Literal["none", "json_schema"] = "none"
+    structured_output_schema: Optional[str] = None
+    structured_output_failure_kind: Literal["none", "grammar_truncation_error", "schema_validation_error", "transport_error"] = "none"
     skill_router_resolver: Literal["none", "local", "model"] = "none"
     skill_router_model_attempted: bool = False
     skill_router_model_error: Optional[str] = None
@@ -102,13 +112,15 @@ class SmartRunTelemetry(BaseModel):
     auto_selected_skill_id: Optional[str] = None
     auto_selected_skill_name: Optional[str] = None
     auto_selected_skill_reason: Optional[str] = None
-    planner_resolver: Literal["local", "groq"] = "local"
+    planner_resolver: Literal["local", "model"] = "local"
     planner_model_attempted: bool = False
     planner_model_error: Optional[str] = None
     planner_provider: Optional[str] = None
     planner_model: Optional[str] = None
     action_route: Literal["pass_through", "save_note", "transform_then_paste", "transform_then_save_note"] = "transform_then_paste"
     action_resolver: Literal["none", "local", "groq"] = "none"
+    computer_use_trigger: Optional[Literal["explicit_mode", "action_phrase"]] = None
+    computer_use_plan_kind: Optional[Literal["desktop_action", "local_task", "multi_step", "refusal"]] = None
     external_context_source: Literal["selection", "clipboard", "none"] = "none"
     selection_available: bool = False
     selection_used: bool = False
@@ -129,7 +141,13 @@ class SmartRunTelemetry(BaseModel):
 
 class PendingActionReviewPayload(BaseModel):
     run_id: str
-    action_type: Literal["open_app", "open_url", "mail_draft"]
+    action_type: Literal[
+        "open_app",
+        "open_url",
+        "mail_draft",
+        "youtube_open_first_result",
+        "youtube_ensure_playing",
+    ]
     title: str
     summary: str
     script: str
@@ -171,6 +189,17 @@ class AutoActionPayload(BaseModel):
     ui_index: Optional[int] = None
 
 
+class LocalTaskRequestPayload(BaseModel):
+    request_text: str
+    command: Optional[str] = None
+    cwd: Optional[str] = None
+    title: Optional[str] = None
+    source_intent: Literal["local_task", "computer_use"] = "local_task"
+    run_kind: TaskRunKind = "single_step"
+    plan_summary: Optional[str] = None
+    steps: List[LocalTaskStep] = Field(default_factory=list)
+
+
 class SmartModeResult(BaseModel):
     intent: SmartIntent
     lane: SmartLane
@@ -184,7 +213,9 @@ class SmartModeResult(BaseModel):
     deterministic_operations: List[str] = Field(default_factory=list)
     alternatives: List[str] = Field(default_factory=list)
     pending_action_review: Optional[PendingActionReviewPayload] = None
+    local_task_request: Optional[LocalTaskRequestPayload] = None
     auto_action: Optional[AutoActionPayload] = None
     action_error: Optional[str] = None
     action_error_kind: Optional[Literal["resolution", "execution"]] = None
+    refusal_message: Optional[str] = None
     telemetry: SmartRunTelemetry

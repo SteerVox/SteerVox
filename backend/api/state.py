@@ -18,6 +18,7 @@ from providers.model_discovery import ModelDiscovery
 from runtime_events import RuntimeEventBroker
 from security.secrets_manager import SecretsManager
 from usage_stats import UsageStatsStore
+from utils.logger import get_logger
 from utils.paths import get_temp_dir, safe_chmod
 from writing_memory import WritingToolsStore
 
@@ -26,12 +27,15 @@ RUNTIME_REVISION_KEYS = (
     "config",
     "providers",
     "history",
+    "tasks",
     "inbox",
     "skills",
     "domains",
     "writing_tools",
     "usage",
 )
+
+logger = get_logger()
 
 
 @dataclass
@@ -67,6 +71,14 @@ class BackendAppState:
         )
 
     def restart_engine(self) -> SteerVoxEngine:
+        config = self.config_manager.get_config()
+        logger.info(
+            "[BackendState] Restarting engine with Smart=%s/%s router=%s/%s",
+            config.llm.provider,
+            config.llm.model,
+            config.llm.routing.provider,
+            config.llm.routing.model,
+        )
         self.engine.shutdown()
         self.engine = self._build_engine()
         return self.engine
@@ -143,6 +155,9 @@ class BackendAppState:
             "last_smart_run": self.engine.last_smart_run,
             "smart_preview": self.engine.smart_preview,
             "pending_action_review": self.engine.pending_action_review,
+            "pending_review": self.engine.pending_review,
+            "active_task_run": self.engine.active_task_run,
+            "task_result_summary": self.engine.task_result_summary,
             "live_transcription": self.live_transcription_manager.state,
             "local_stt": build_local_stt_status(
                 config.stt.provider,
@@ -195,6 +210,31 @@ class BackendAppState:
                 "pending_action_review",
                 self.build_status_payload().get("pending_action_review"),
             )
+            self.runtime_event_broker.publish(
+                "pending_review",
+                self.build_status_payload().get("pending_review"),
+            )
+            return
+
+        if event_type == "pending_review":
+            self.runtime_event_broker.publish(
+                "pending_review",
+                self.build_status_payload().get("pending_review"),
+            )
+            return
+
+        if event_type == "active_task_run":
+            self.runtime_event_broker.publish(
+                "active_task_run",
+                self.build_status_payload().get("active_task_run"),
+            )
+            return
+
+        if event_type == "task_result_summary":
+            self.runtime_event_broker.publish(
+                "task_result_summary",
+                self.build_status_payload().get("task_result_summary"),
+            )
             return
 
         if event_type == "live_transcription":
@@ -223,6 +263,7 @@ class BackendAppState:
 
         if event_type in {
             "history_invalidated",
+            "task_runs_invalidated",
             "inbox_invalidated",
             "skills_invalidated",
             "domains_invalidated",
@@ -230,6 +271,7 @@ class BackendAppState:
         }:
             scope = {
                 "history_invalidated": "history",
+                "task_runs_invalidated": "tasks",
                 "inbox_invalidated": "inbox",
                 "skills_invalidated": "skills",
                 "domains_invalidated": "domains",

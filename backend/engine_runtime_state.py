@@ -252,6 +252,8 @@ class EngineRuntimeCoordinator:
         text: str = "",
         final_text: Optional[str] = None,
         error: Optional[str] = None,
+        smart_profile: Optional[str] = None,
+        smart_profile_label: Optional[str] = None,
     ) -> None:
         self.state.smart_preview = {
             "run_id": run_id,
@@ -260,6 +262,8 @@ class EngineRuntimeCoordinator:
             "text": text,
             "final_text": final_text,
             "error": error,
+            "smart_profile": smart_profile,
+            "smart_profile_label": smart_profile_label,
             "updated_at": self.now_iso(),
         }
         self.emit_runtime_event("smart_preview")

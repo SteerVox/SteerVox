@@ -40,6 +40,8 @@ function itemKey(item: LibraryItem) {
 
 function formatRunProviders(item: HistoryItem) {
   const stt = `${item.stt_provider || 'unknown'} • ${item.stt_model || 'unknown'}`
+  if (item.telemetry.intent === 'computer_use') return `Computer use • ${item.llm_provider || 'no LLM'}`
+  if (item.mode === 'local_task') return `Local task • ${item.llm_provider || 'no LLM'}`
   if (item.mode !== 'smart_transform') return `STT ${stt}`
   return `${stt} • LLM ${item.llm_provider || 'unknown'} • ${item.llm_model || 'unknown'}`
 }
@@ -587,10 +589,16 @@ export function LibraryView() {
                             <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">Transcript</div>
                             <pre className="mt-3 whitespace-pre-wrap text-sm leading-7 text-text-primary">{selectedItem.history.transcript}</pre>
                           </div>
-                          <div className="glass-card p-5">
-                            <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">
-                              {selectedItem.source_mode === 'smart_transform' ? 'Smart output' : 'Dictation output'}
-                            </div>
+                            <div className="glass-card p-5">
+                              <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">
+                              {selectedItem.history.telemetry.intent === 'computer_use'
+                                ? 'Computer use output'
+                                : selectedItem.source_mode === 'smart_transform'
+                                ? 'Smart output'
+                                : selectedItem.source_mode === 'local_task'
+                                  ? 'Task output'
+                                  : 'Dictation output'}
+                              </div>
                             {isLibraryCodeItem(selectedItem) ? (
                               <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-[20px] border border-white/6 bg-black/22 px-4 py-4 font-mono text-[13px] leading-7 text-text-primary">
                                 <code>{selectedItem.history.final_output}</code>

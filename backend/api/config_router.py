@@ -36,6 +36,17 @@ def build_config_router(state: BackendAppState) -> APIRouter:
             or previous_config.llm.model_dump() != updated_config.llm.model_dump()
         )
         if requires_engine_restart:
+            logger.info(
+                "Config change requires engine restart. previous_smart=%s/%s previous_router=%s/%s next_smart=%s/%s next_router=%s/%s",
+                previous_config.llm.provider,
+                previous_config.llm.model,
+                previous_config.llm.routing.provider,
+                previous_config.llm.routing.model,
+                updated_config.llm.provider,
+                updated_config.llm.model,
+                updated_config.llm.routing.provider,
+                updated_config.llm.routing.model,
+            )
             state.restart_engine()
 
         revision = state.bump_runtime_revision("config")

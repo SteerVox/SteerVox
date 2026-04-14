@@ -73,16 +73,17 @@ def test_lmstudio_native_chat_uses_native_v1_payload(monkeypatch):
     assert response.content == "Please ship this once QA has approved it."
     assert calls == [{
         "method": "POST",
-        "url": "http://localhost:1234/api/v1/chat",
+        "url": "http://localhost:1234/v1/chat/completions",
         "json": {
             "model": "nvidia/nemotron-3-nano-4b",
-            "input": "Rewrite ship this after QA signs off",
+            "messages": [
+                {"role": "system", "content": "Return only the transformed output."},
+                {"role": "user", "content": "Rewrite ship this after QA signs off"},
+            ],
             "temperature": 0.1,
             "stream": False,
-            "store": False,
-            "system_prompt": "Return only the transformed output.",
-            "max_output_tokens": 192,
-            "context_length": 4096,
+            "max_tokens": 192,
+            "context_length": 8192,
             "reasoning": "off",
         },
         "headers": {"Content-Type": "application/json"},
@@ -308,14 +309,13 @@ def test_lmstudio_native_chat_streams_message_deltas_and_chat_end(monkeypatch):
         return FakeStreamingResponse(
             200,
             lines=[
-                'event: message.delta',
-                'data: {"type":"message.delta","content":"Please ship this once "}',
+                'data: {"choices":[{"delta":{"content":"Please ship this once "},"finish_reason":null}]}',
                 '',
-                'event: message.delta',
-                'data: {"type":"message.delta","content":"QA has approved it."}',
+                'data: {"choices":[{"delta":{"content":"QA has approved it."},"finish_reason":null}]}',
                 '',
-                'event: chat.end',
-                'data: {"type":"chat.end","result":{"output":[{"type":"message","content":"Please ship this once QA has approved it."}]}}',
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+                '',
+                'data: [DONE]',
                 '',
             ],
         )
@@ -332,17 +332,17 @@ def test_lmstudio_native_chat_streams_message_deltas_and_chat_end(monkeypatch):
 
     assert [event["event"] for event in events] == ["message.delta", "message.delta", "chat.end"]
     assert events[0]["data"]["content"] == "Please ship this once "
-    assert events[-1]["data"]["result"]["output"][0]["content"] == "Please ship this once QA has approved it."
+    assert events[-1]["data"]["result"]["choices"][0]["message"]["content"] == "Please ship this once QA has approved it."
     assert calls == [{
         "method": "POST",
-        "url": "http://localhost:1234/api/v1/chat",
+        "url": "http://localhost:1234/v1/chat/completions",
         "json": {
             "model": "nvidia/nemotron-3-nano-4b",
-            "input": "Rewrite this politely.",
+            "messages": [{"role": "user", "content": "Rewrite this politely."}],
             "temperature": 0.1,
             "stream": True,
-            "store": False,
-            "max_output_tokens": 192,
+            "max_tokens": 192,
+            "context_length": 8192,
         },
         "headers": {"Content-Type": "application/json"},
         "timeout": 30.0,

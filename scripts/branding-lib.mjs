@@ -379,10 +379,15 @@ export async function syncFrontendPackageJson(manifest) {
     'build:local-speech-helper': 'node scripts/build-local-speech-helper.mjs',
     'build:system-control-helper': 'node scripts/build-system-control-helper.mjs',
     'prepare:ffmpeg-runtime': 'node scripts/prepare-ffmpeg-runtime.mjs',
+    'verify:release': 'bash ../scripts/verify-release.sh public-beta',
     'package:desktop': 'npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder',
     'package:desktop:mac': 'npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder --mac dmg --arm64',
+    'package:desktop:mac:public-beta': 'npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder --mac dmg --arm64',
+    'package:desktop:mac:signed': 'npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder --mac dmg --arm64',
     build: 'npm run branding:validate && npm run validate:mac-assets && npm run build:local-speech-helper && npm run build:system-control-helper && npm run package:desktop',
-    'build:mac': 'bash ../scripts/build-mac.sh',
+    'build:mac': 'bash ../scripts/build-mac.sh public-beta',
+    'build:mac:public-beta': 'bash ../scripts/build-mac.sh public-beta',
+    'build:mac:signed': 'bash ../scripts/build-mac.sh signed',
   }
   packageJson.build.files = [
     'package.json',

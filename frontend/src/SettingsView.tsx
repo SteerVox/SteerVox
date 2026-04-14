@@ -23,7 +23,7 @@ import { apiDelete, apiGet, apiPost, apiPut } from './lib/api'
 import { getHistoryItemRerunNotice, isHistoryItemRerunnable } from './lib/historyRuns'
 import { deriveLiveTranscriptionUiState, mapLiveTranscriptionControlValue } from './lib/liveTranscriptionSettings'
 import { computeOnboardingState } from './lib/onboarding'
-import { applyProviderSelection } from './lib/providerSettings'
+import { applyModelSelection, applyProviderSelection } from './lib/providerSettings'
 import { selectActiveWorkState, selectOnboardingState, selectPrimaryAttentionIssue } from './lib/runtimeSelectors'
 import { createLatestRequestController, responseData, retryRead, settleRecord, withSignal } from './lib/runtime'
 import { refreshRuntimeLocalEnvironment, refreshRuntimeProviderModels, refreshRuntimeStatus, useRuntimeStore } from './lib/runtimeStore'
@@ -63,7 +63,7 @@ import type {
 } from './types'
 
 type StepId = 'voice' | 'rewrite' | 'privacy' | 'advanced'
-type OnboardingStepId = 'microphone' | 'accessibility' | 'providers' | 'dictation_test' | 'complete'
+type OnboardingStepId = 'install' | 'microphone' | 'accessibility' | 'providers' | 'dictation_test' | 'complete'
 type SettingsViewCache = {
   remoteConfig: AppConfig
   draftConfig: AppConfig
@@ -480,6 +480,15 @@ function createConfigReducerState(appliedConfig: AppConfig | null, draftConfig: 
     draftConfig,
     dirtySections: deriveDirtySections(appliedConfig, draftConfig),
   }
+}
+
+function formatPlannerResolverLabel(lastSmartRun: { planner_resolver: 'local' | 'model'; planner_provider: string | null; planner_model: string | null }) {
+  if (lastSmartRun.planner_resolver !== 'model') return 'Local rules'
+  const provider = lastSmartRun.planner_provider?.trim()
+  const model = lastSmartRun.planner_model?.trim()
+  if (provider && model) return `${provider} • ${model}`
+  if (model) return model
+  return 'Model-assisted'
 }
 
 function configReducer(state: ConfigReducerState, action: ConfigReducerAction): ConfigReducerState {
@@ -1879,7 +1888,10 @@ export const SettingsView = () => {
 
   const dismissPackagedOnboarding = async () => {
     const nextContext = await window.windowControls?.dismissPackagedOnboarding?.()
-    if (nextContext) setLaunchContext(nextContext)
+    if (nextContext) {
+      setLaunchContext(nextContext)
+      setSaveError(null)
+    }
   }
 
   const setBackgroundOnly = async (enabled: boolean) => {
@@ -1889,7 +1901,10 @@ export const SettingsView = () => {
 
   const completePackagedOnboarding = async () => {
     const nextContext = await window.windowControls?.completePackagedOnboarding?.()
-    if (nextContext) setLaunchContext(nextContext)
+    if (nextContext) {
+      setLaunchContext(nextContext)
+      setSaveError(nextContext.onboarding_blocker)
+    }
   }
 
   const updateProvider = (section: 'llm' | 'stt', newProvider: string) => {
@@ -2588,19 +2603,22 @@ export const SettingsView = () => {
   const showActionBar = dirty || saving || saved || Boolean(saveError)
   const totalUsageRuns = (usageStats?.dictation_runs || 0) + (usageStats?.smart_runs || 0)
   const hasUsageStats = totalUsageRuns > 0
-  const onboardingReady = appliedOnboardingState.completed
-  const rewriteFollowUpNeeded = !currentLlmKeyReady
+  const packagedInstallReady = !launchContext?.is_packaged || launchContext.install_location === 'applications'
+  const onboardingReady = appliedOnboardingState.completed && packagedInstallReady
+  const rewriteFollowUpNeeded = onboardingReady && !currentLlmKeyReady
   const showPackagedOnboarding = packagedOnboardingVisible
-  const onboardingStep: OnboardingStepId = !appliedOnboardingState.microphoneReady
-    ? 'microphone'
-    : !appliedOnboardingState.accessibilityReady
-      ? 'accessibility'
-      : !appliedOnboardingState.dictationProviderReady
-          ? 'providers'
-          : !appliedOnboardingState.dictationTested
-            ? 'dictation_test'
-            : 'complete'
-  const onboardingStepOrder: OnboardingStepId[] = ['microphone', 'accessibility', 'providers', 'dictation_test', 'complete']
+  const onboardingStep: OnboardingStepId = !packagedInstallReady
+    ? 'install'
+    : !appliedOnboardingState.microphoneReady
+      ? 'microphone'
+      : !appliedOnboardingState.accessibilityReady
+        ? 'accessibility'
+        : !appliedOnboardingState.dictationProviderReady
+            ? 'providers'
+            : !appliedOnboardingState.dictationTested
+              ? 'dictation_test'
+              : 'complete'
+  const onboardingStepOrder: OnboardingStepId[] = ['install', 'microphone', 'accessibility', 'providers', 'dictation_test', 'complete']
   const onboardingStepIndex = onboardingStepOrder.indexOf(onboardingStep)
   const microphoneActionLabel = microphoneAccess === 'denied' || microphoneAccess === 'restricted'
     ? 'Open Microphone Settings'
@@ -2643,6 +2661,7 @@ export const SettingsView = () => {
         ? 'App only'
         : 'Unavailable'
   const onboardingStepTitles: Record<OnboardingStepId, string> = {
+    install: 'Move the beta into Applications',
     microphone: 'Allow microphone access',
     accessibility: 'Enable Accessibility access',
     providers: 'Configure a dictation provider',
@@ -2650,9 +2669,10 @@ export const SettingsView = () => {
     complete: 'Finish setup',
   }
   const onboardingStepDescriptions: Record<OnboardingStepId, string> = {
+    install: 'Website builds should be opened from the DMG once, moved into /Applications, then reopened from /Applications before you trust the final setup state.',
     microphone: 'Allow microphone access so Dictate and Smart can record.',
     accessibility: 'Enable Accessibility for shortcuts and reliable paste handoff.',
-    providers: 'Choose one working speech provider. Groq is the simplest cloud path because it can also unlock Smart later.',
+    providers: 'Choose one working speech provider. Use the bundled local path first when it is already ready; otherwise Groq is the simplest cloud path because it can also unlock Smart later.',
     dictation_test: 'Run one real Dictate pass so you know capture, transcription, and paste are working end to end.',
     complete: 'Dictation is ready. Smart is optional and can be added next.',
   }
@@ -2905,11 +2925,11 @@ export const SettingsView = () => {
                             title="Getting started"
                             icon={<SetupIcon size={18} />}
                             description="Get to the first successful dictation before you worry about advanced setup."
-                            action={<StatusBadge label={onboardingReady ? 'Dictation ready' : `Step ${Math.min(onboardingStepIndex + 1, 4)} of 4`} tone={onboardingReady ? 'good' : 'warn'} />}
+                            action={<StatusBadge label={onboardingReady ? 'Dictation ready' : `Step ${Math.min(onboardingStepIndex + 1, 5)} of 5`} tone={onboardingReady ? 'good' : 'warn'} />}
                           >
                             <div className="grid gap-4 xl:grid-cols-[0.92fr_1.28fr]">
                               <div className="grid gap-3">
-                                {(['microphone', 'accessibility', 'providers', 'dictation_test'] as OnboardingStepId[]).map((stepId, index) => {
+                                {(['install', 'microphone', 'accessibility', 'providers', 'dictation_test'] as OnboardingStepId[]).map((stepId, index) => {
                                   const completed = onboardingStepOrder.indexOf(stepId) < onboardingStepIndex
                                   const active = onboardingStep === stepId
                                   const tone = completed ? 'good' : active ? 'warn' : 'neutral'
@@ -2932,7 +2952,7 @@ export const SettingsView = () => {
                                 <div className="rounded-2xl border border-white/6 bg-white/[0.02] p-4">
                                   <div className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Recommended path</div>
                                   <p className="mt-2 text-sm leading-6 text-text-secondary">
-                                    Groq is the shortest cloud setup because one key can cover both Dictate and Smart later.
+                                    If the bundled local speech path is already ready, start there. Otherwise Groq is the shortest cloud setup because one key can cover both Dictate and Smart later.
                                   </p>
                                 </div>
                               </div>
@@ -2941,12 +2961,13 @@ export const SettingsView = () => {
                                 <div className="flex flex-wrap items-start justify-between gap-3">
                                   <div>
                                     <div className="text-[11px] uppercase tracking-[0.26em] text-text-muted">
-                                      {onboardingStep === 'complete' ? 'Ready to go' : `Current step • ${Math.min(onboardingStepIndex + 1, 4)} of 4`}
+                                      {onboardingStep === 'complete' ? 'Ready to go' : `Current step • ${Math.min(onboardingStepIndex + 1, 5)} of 5`}
                                     </div>
                                     <h3 className="mt-2 text-lg font-semibold text-text-primary">{onboardingStepTitles[onboardingStep]}</h3>
                                     <p className="mt-2 max-w-2xl text-sm leading-6 text-text-secondary">{onboardingStepDescriptions[onboardingStep]}</p>
                                   </div>
                                   <div className="flex flex-wrap gap-2">
+                                    <StatusBadge label="Public beta" tone="neutral" />
                                     <StatusBadge label={microphoneBadgeLabel} tone={microphoneTone} />
                                     <StatusBadge label={accessibilityBadgeLabel} tone={accessibilityTone} />
                                     <StatusBadge label={currentSttKeyReady ? 'Dictation provider ready' : 'Provider setup needed'} tone={currentSttKeyReady ? 'good' : 'warn'} />
@@ -2955,11 +2976,32 @@ export const SettingsView = () => {
 
                                 {launchContext?.should_prompt_move_to_applications ? (
                                   <div className="mt-4 rounded-2xl border border-semantic-warning/20 bg-semantic-warning/8 p-4">
-                                    <div className="text-sm font-medium text-text-primary">Move the app to Applications before daily use</div>
+                                    <div className="text-sm font-medium text-text-primary">Move the app to Applications before finishing setup</div>
                                     <p className="mt-2 text-sm leading-6 text-text-secondary">
-                                      {DISPLAY_NAME} is running from {launchContext.install_location === 'disk_image' ? 'the mounted DMG' : 'outside /Applications'}. Drag it into <span className="font-medium text-text-primary">Applications</span> so macOS permissions stay stable.
+                                      {DISPLAY_NAME} is running from {launchContext.install_location === 'disk_image' ? 'the mounted DMG' : 'outside /Applications'}. Drag it into <span className="font-medium text-text-primary">Applications</span>, then reopen it from there so permissions and helper paths stay stable for the unsigned beta.
+                                    </p>
+                                    <p className="mt-2 text-sm leading-6 text-text-secondary">
+                                      First launch on macOS may require the usual unsigned-beta workaround: open the app once from Finder, confirm the system prompt, then continue setup from the copy in Applications.
                                     </p>
                                     <div className="mt-4 flex flex-wrap gap-3">
+                                      <FooterButton tone="secondary" onClick={() => window.windowControls?.revealAppInFinder?.()}>Reveal current app</FooterButton>
+                                      <FooterButton tone="secondary" onClick={() => window.windowControls?.openApplicationsFolder?.()}>Open Applications</FooterButton>
+                                    </div>
+                                  </div>
+                                ) : null}
+
+                                {onboardingStep === 'install' ? (
+                                  <div className="mt-5 space-y-4">
+                                    <div className="rounded-2xl border border-white/6 bg-white/[0.02] p-4">
+                                      <div className="text-sm font-medium text-text-primary">Install location</div>
+                                      <p className="mt-2 text-sm leading-6 text-text-secondary">
+                                        Current location: <span className="font-medium text-text-primary">{launchContext?.install_location === 'disk_image' ? 'Mounted DMG' : launchContext?.install_location === 'other' ? 'Outside /Applications' : launchContext?.install_location === 'applications' ? '/Applications' : 'Development'}</span>.
+                                      </p>
+                                      <p className="mt-2 text-sm leading-6 text-text-secondary">
+                                        Finish the beta funnel only after reopening the app from <span className="font-medium text-text-primary">/Applications</span>.
+                                      </p>
+                                    </div>
+                                    <div className="flex flex-wrap gap-3">
                                       <FooterButton tone="secondary" onClick={() => window.windowControls?.revealAppInFinder?.()}>Reveal current app</FooterButton>
                                       <FooterButton tone="secondary" onClick={() => window.windowControls?.openApplicationsFolder?.()}>Open Applications</FooterButton>
                                     </div>
@@ -3084,10 +3126,16 @@ export const SettingsView = () => {
                                   </div>
                                 ) : null}
 
+                                {launchContext?.onboarding_blocker ? (
+                                  <div className="mt-5 rounded-2xl border border-semantic-warning/20 bg-semantic-warning/8 px-4 py-3 text-sm leading-6 text-text-secondary">
+                                    {launchContext.onboarding_blocker}
+                                  </div>
+                                ) : null}
+
                                 <div className="mt-5 flex flex-wrap gap-3">
                                   <FooterButton tone="secondary" onClick={dismissPackagedOnboarding}>Continue later</FooterButton>
                                   <FooterButton onClick={completePackagedOnboarding} disabled={!onboardingReady}>
-                                    {onboardingReady ? 'Finish setup' : 'Finish after first dictation'}
+                                    {onboardingReady ? 'Finish setup' : 'Finish after install and dictation'}
                                   </FooterButton>
                                 </div>
                               </div>
@@ -3601,7 +3649,7 @@ export const SettingsView = () => {
                                 <select
                                   className="w-full rounded-2xl border border-white/8 bg-black/30 px-4 py-3 text-sm text-text-primary outline-none focus:border-accent-primary/30 focus:ring-2 focus:ring-accent-primary/20"
                                   value={draftConfig.llm.model}
-                                  onChange={(event) => setDraftConfig({ ...draftConfig, llm: { ...draftConfig.llm, model: event.target.value } })}
+                                  onChange={(event) => setDraftConfig(applyModelSelection(draftConfig, 'llm', event.target.value))}
                                 >
                                   {displayedLlmModels.map((model) => (
                                     <option key={model.id} value={model.id}>{formatProviderModelLabel(model, draftConfig.llm.provider)}</option>
@@ -3928,6 +3976,84 @@ export const SettingsView = () => {
                                 : 'Experimental media controls are off. Global play/pause and track navigation are blocked, but app-aware pause, volume, brightness, browser navigation, and reviewed actions still work normally.'}
                             </div>
                           </div>
+                        </SectionCard>
+                        ) : null}
+
+                        {activeStep === 'advanced' ? (
+                        <SectionCard
+                          title="Local task shell"
+                          icon={<SparkIcon size={18} />}
+                          description="SteerVox-native reviewed command execution for local tasks. This lane stays local-only and blocks network-capable shell paths."
+                          action={
+                            <StatusBadge
+                              label={
+                                (draftConfig.actions.local_task_shell?.enabled ?? true)
+                                  ? `Enabled · ${(draftConfig.actions.local_task_shell?.safety_mode || 'strict').replace('_', ' ')}`
+                                  : 'Disabled'
+                              }
+                              tone={(draftConfig.actions.local_task_shell?.enabled ?? true) ? 'good' : 'warn'}
+                            />
+                          }
+                        >
+                          {(() => {
+                            const localTaskShell = draftConfig.actions.local_task_shell ?? {
+                              enabled: true,
+                              safety_mode: 'strict' as const,
+                              allowed_directories: [],
+                            }
+                            return (
+                              <div className="grid gap-5">
+                                <ToggleCard
+                                  title="Enable local task shell"
+                                  description="Allow SteerVox to run reviewed local tasks such as repo-local search, diff, and test commands after approval."
+                                  checked={localTaskShell.enabled}
+                                  onChange={(checked) => setDraftConfig({
+                                    ...draftConfig,
+                                    actions: {
+                                      ...draftConfig.actions,
+                                      local_task_shell: {
+                                        ...localTaskShell,
+                                        enabled: checked,
+                                      },
+                                    },
+                                  })}
+                                />
+
+                                <div className="rounded-2xl border border-white/8 bg-black/20 px-4 py-3 text-sm leading-6 text-text-secondary">
+                                  <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-text-muted">Safety mode</div>
+                                  <div className="mt-2">
+                                    Strict local-only mode is always on in V1. Network tools, remote git operations, package installs, shell chaining, and working directories outside approved roots stay blocked.
+                                  </div>
+                                </div>
+
+                                <label className="grid gap-2">
+                                  <span className="text-sm font-medium text-text-primary">Allowed directories</span>
+                                  <textarea
+                                    value={(localTaskShell.allowed_directories || []).join('\n')}
+                                    onChange={(event) => setDraftConfig({
+                                      ...draftConfig,
+                                      actions: {
+                                        ...draftConfig.actions,
+                                        local_task_shell: {
+                                          ...localTaskShell,
+                                          allowed_directories: event.target.value
+                                            .split('\n')
+                                            .map((value) => value.trim())
+                                            .filter(Boolean),
+                                        },
+                                      },
+                                    })}
+                                    rows={4}
+                                    className="min-h-[112px] rounded-2xl border border-white/10 bg-black/25 px-3 py-3 text-sm leading-6 text-text-primary outline-none transition-colors focus:border-white/20"
+                                    placeholder="/Users/you/Work/project-one&#10;/Users/you/Work/project-two"
+                                  />
+                                  <p className="text-sm leading-6 text-text-secondary">
+                                    One absolute path per line. SteerVox always allows the current workspace root and app-home storage; use this list to add extra local roots explicitly.
+                                  </p>
+                                </label>
+                              </div>
+                            )
+                          })()}
                         </SectionCard>
                         ) : null}
 
@@ -5182,11 +5308,14 @@ export const SettingsView = () => {
                           {lastSmartRun ? (
                             <>
                               <div className="flex flex-wrap items-center gap-2">
+                                {lastSmartRun.smart_profile === 'local_compact' ? (
+                                  <StatusBadge label="Local Smart profile" tone="good" />
+                                ) : null}
                                 <StatusBadge
                                   label={`Skill router: ${lastSmartRun.skill_router_resolver === 'model' ? 'Model-assisted' : lastSmartRun.skill_router_resolver === 'local' ? 'Local rules' : 'Not used'}`}
                                   tone={lastSmartRun.skill_router_resolver === 'model' ? 'good' : 'neutral'}
                                 />
-                                <StatusBadge label={`Smart router: ${lastSmartRun.planner_resolver === 'groq' ? 'Groq Compound Mini' : 'Local rules'}`} tone={lastSmartRun.planner_resolver === 'groq' ? 'good' : 'neutral'} />
+                                <StatusBadge label={`Smart router: ${formatPlannerResolverLabel(lastSmartRun)}`} tone={lastSmartRun.planner_resolver === 'model' ? 'good' : 'neutral'} />
                                 <StatusBadge label={`Action: ${formatActionRoute(lastSmartRun.action_route)}`} tone="neutral" />
                                 <StatusBadge label={`Action routing: ${lastSmartRun.action_resolver === 'groq' ? 'Groq note router' : lastSmartRun.action_resolver === 'local' ? 'Local rules' : 'None'}`} tone={lastSmartRun.action_resolver === 'groq' ? 'good' : 'neutral'} />
                                 <StatusBadge label={`Intent: ${formatTargetType(lastSmartRun.intent)}`} tone="neutral" />
@@ -5202,6 +5331,7 @@ export const SettingsView = () => {
                               <div className="mt-5 grid gap-4 xl:grid-cols-2">
                                 <InspectorField label="Requested template" value={`${lastSmartRun.requested_skill.name} (${lastSmartRun.requested_skill.id})`} />
                                 <InspectorField label="Template used" value={`${lastSmartRun.skill_used.name} (${lastSmartRun.skill_used.id})`} />
+                                <InspectorField label="Smart profile" value={lastSmartRun.smart_profile === 'local_compact' ? 'Local Smart profile' : 'Default'} />
                                 <InspectorField
                                   label="Auto-selected template"
                                   value={lastSmartRun.auto_selected_skill_id
@@ -5264,8 +5394,8 @@ export const SettingsView = () => {
                                 />
                                 <InspectorField
                                   label="Smart router"
-                                  value={lastSmartRun.planner_resolver === 'groq'
-                                    ? `${lastSmartRun.planner_provider || 'groq'} • ${lastSmartRun.planner_model || 'groq/compound-mini'}`
+                                  value={lastSmartRun.planner_resolver === 'model'
+                                    ? formatPlannerResolverLabel(lastSmartRun)
                                     : lastSmartRun.planner_model_attempted
                                       ? `Local fallback after ${lastSmartRun.planner_model_error || 'router failure'}`
                                       : 'Local rules only'}
@@ -5281,6 +5411,7 @@ export const SettingsView = () => {
                                 <InspectorField label="Clipboard context" value={lastSmartRun.clipboard_available ? `${lastSmartRun.clipboard_used ? 'Used' : 'Available but not used'} • ${lastSmartRun.clipboard_chars} chars${lastSmartRun.clipboard_truncated ? ' • truncated before upload' : ''}` : 'No clipboard text was available'} />
                                 <InspectorField label="Transcript / output size" value={`${lastSmartRun.transcript_chars} chars in • ${lastSmartRun.output_chars} chars out`} />
                                 <InspectorField label="Payload estimate" value={lastSmartRun.external_request_made ? `${lastSmartRun.payload_estimated_bytes} bytes` : '0 bytes (local-only route)'} />
+                                <InspectorField label="Structured output" value={lastSmartRun.structured_output_mode === 'json_schema' ? `${lastSmartRun.structured_output_schema || 'json_schema'}${lastSmartRun.structured_output_failure_kind !== 'none' ? ` • ${lastSmartRun.structured_output_failure_kind}` : ''}` : 'Not used'} />
                                 <InspectorField label="Latencies" value={`Total ${formatDuration(lastSmartRun.total_latency_ms)} • STT ${formatDuration(lastSmartRun.stt_latency_ms)} • Planner ${formatDuration(lastSmartRun.planner_latency_ms)} • LLM ${formatDuration(lastSmartRun.llm_latency_ms)}`} />
                                 <InspectorField label="Deterministic ops" value={lastSmartRun.deterministic_operations.length ? lastSmartRun.deterministic_operations.join(', ') : 'None'} />
                               </div>
@@ -5289,6 +5420,11 @@ export const SettingsView = () => {
                                 <div className="rounded-2xl border border-white/6 bg-white/[0.02] p-4 text-sm leading-7 text-text-secondary">
                                   <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">Routing reason</div>
                                   <p className="mt-3">{lastSmartRun.reason}</p>
+                                  {lastSmartRun.profile_limit_reason ? (
+                                    <p className="mt-2 text-text-secondary">
+                                      Profile limit: {lastSmartRun.profile_limit_reason}
+                                    </p>
+                                  ) : null}
                                   {lastSmartRun.auto_selected_skill_reason ? (
                                     <p className="mt-3 border-t border-white/8 pt-3">
                                       Skill selection: {lastSmartRun.auto_selected_skill_reason}
@@ -5424,7 +5560,11 @@ export const SettingsView = () => {
                                 <div className="flex flex-wrap items-start justify-between gap-3">
                                   <div>
                                     <div className="text-sm font-medium text-text-primary">
-                                      {item.mode === 'smart_transform' ? 'Smart' : 'Dictation'} • {formatCapturedAt(item.created_at)}
+                                      {item.mode === 'smart_transform'
+                                        ? 'Smart'
+                                        : item.mode === 'local_task'
+                                          ? 'Local task'
+                                          : 'Dictation'} • {formatCapturedAt(item.created_at)}
                                     </div>
                                     <p className="mt-2 text-sm leading-6 text-text-secondary">
                                       STT {item.stt_provider || 'unknown'} • {item.stt_model || 'unknown'}

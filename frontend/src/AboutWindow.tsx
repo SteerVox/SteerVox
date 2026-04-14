@@ -34,6 +34,12 @@ export default function AboutWindow() {
     const electronVersion = readElectronVersion()
     return electronVersion ? `Version ${appVersion} (${electronVersion})` : `Version ${appVersion}`
   }, [launchContext])
+  const releaseLabel = launchContext?.release_channel === 'public_beta'
+    ? 'Public beta'
+    : 'Development build'
+  const trustLabel = launchContext?.trust_posture === 'unsigned_beta'
+    ? 'Unsigned website build'
+    : 'Developer trust posture'
 
   return (
     <div className="workspace-shell flex h-full w-full flex-col overflow-hidden rounded-[18px]">
@@ -51,6 +57,14 @@ export default function AboutWindow() {
           </div>
           <div className="mt-1 text-[12px] text-text-secondary">
             {versionLabel}
+          </div>
+          <div className="mt-3 rounded-full border border-white/8 bg-white/[0.04] px-3 py-1 text-[10px] uppercase tracking-[0.24em] text-text-muted">
+            {releaseLabel}
+          </div>
+          <div className="mt-3 space-y-1 text-[12px] text-text-secondary">
+            <div>{trustLabel}</div>
+            <div>Apple Silicon only</div>
+            <div>{launchContext?.manual_updates_only ? 'Manual updates only' : 'Update policy managed elsewhere'}</div>
           </div>
           <div className="mt-3 text-[12px] text-text-secondary">
             {`Copyright © ${COPYRIGHT_HOLDER}`}

@@ -208,13 +208,13 @@ def test_llm_factory_builds_lmstudio_client_without_user_key(monkeypatch):
     assert response.content == "Local reply."
     assert calls == [{
         "method": "POST",
-        "url": "http://localhost:1234/api/v1/chat",
+        "url": "http://localhost:1234/v1/chat/completions",
         "json": {
             "model": "qwen2.5-0.5b-instruct-mlx",
-            "input": "Hello from local LM Studio.",
+            "messages": [{"role": "user", "content": "Hello from local LM Studio."}],
             "temperature": 0.0,
             "stream": False,
-            "store": False,
+            "context_length": 8192,
         },
         "headers": {"Content-Type": "application/json"},
         "timeout": 30.0,
@@ -338,16 +338,17 @@ def test_llm_factory_applies_local_request_tuning_for_lmstudio(monkeypatch):
     assert response.content == "Structured local output."
     assert calls == [{
         "method": "POST",
-        "url": "http://localhost:1234/api/v1/chat",
+        "url": "http://localhost:1234/v1/chat/completions",
         "json": {
             "model": "qwen2.5-0.5b-instruct-mlx",
-            "input": "Rewrite this update",
+            "messages": [
+                {"role": "system", "content": "You are concise."},
+                {"role": "user", "content": "Rewrite this update"},
+            ],
             "temperature": 0.1,
             "stream": False,
-            "store": False,
-            "system_prompt": "You are concise.",
-            "max_output_tokens": 192,
-            "context_length": 4096,
+            "max_tokens": 192,
+            "context_length": 8192,
         },
         "headers": {"Content-Type": "application/json"},
         "timeout": 12.0,

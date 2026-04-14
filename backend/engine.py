@@ -1,3 +1,4 @@
+import os
 import shutil
 import subprocess
 import threading
@@ -25,6 +26,8 @@ from domains import DomainMemoryStore, apply_glossary_corrections, build_domain_
 from engine_runtime_state import EngineRuntimeCoordinator, EngineSessionState, RewriteContextPayload
 from inbox import InboxStore, build_inbox_note
 from local_memory import LocalMemoryStore
+from local_task_shell.models import LocalTaskCreateRequest, LocalTaskStep, TaskRetryMode
+from local_task_shell.service import LocalTaskShellService
 from privacy_rules import minimize_context_fields, resolve_sensitive_targets, suppress_external_text
 from providers.model_discovery import ModelDiscovery
 from providers.stt_factory import STTFactory, STTHintPayload, STTTransientError
@@ -89,15 +92,25 @@ class SteerVoxEngine:
         self._is_processing = False
         self._processing_lock = threading.Lock()
         self.runtime = EngineRuntimeCoordinator(runtime_event_emitter=runtime_event_emitter)
+        self.local_task_shell = LocalTaskShellService(
+            config_manager=self.config_manager,
+            runtime_event_emitter=self._emit_runtime_event,
+            on_run_finished=self._handle_local_task_finished,
+        )
         self._action_error_clear_timer: Optional[threading.Timer] = None
         self._action_error_clear_token: Optional[str] = None
 
         logger.info(
-            "[Engine] Initialized — STT: %s/%s, LLM: %s/%s",
+            "[Engine] Initialized — source=%s cwd=%s app_root=%s STT=%s/%s LLM=%s/%s router=%s/%s",
+            Path(__file__).resolve(),
+            Path.cwd(),
+            os.environ.get("APP_ROOT") or "dev",
             config.stt.provider,
             config.stt.model,
             config.llm.provider,
             config.llm.model,
+            config.llm.routing.provider,
+            config.llm.routing.model,
         )
 
     @property
@@ -233,6 +246,40 @@ class SteerVoxEngine:
         self._session_state.pending_action_review = value
 
     @property
+    def active_task_run(self) -> Optional[Dict[str, Any]]:
+        return self.local_task_shell.active_run
+
+    @property
+    def task_result_summary(self) -> Optional[Dict[str, Any]]:
+        return self.local_task_shell.last_result_summary
+
+    @property
+    def pending_review(self) -> Optional[Dict[str, Any]]:
+        task_review = self.local_task_shell.pending_review
+        if task_review is not None:
+            return task_review
+        current = self.pending_action_review
+        if not current:
+            return None
+        run_id = str(current.get("run_id") or "")
+        return {
+            "id": f"desktop-action:{run_id}",
+            "run_id": run_id,
+            "scope": "desktop_action",
+            "kind": "desktop_action",
+            "title": current.get("title"),
+            "summary": current.get("summary"),
+            "detail": None,
+            "command": None,
+            "cwd": None,
+            "risk_level": "medium",
+            "status": current.get("status"),
+            "error": current.get("error"),
+            "language": current.get("language"),
+            "script": current.get("script"),
+        }
+
+    @property
     def pipeline_timings(self) -> Dict[str, Optional[str]]:
         return self._session_state.pipeline_timings
 
@@ -286,6 +333,8 @@ class SteerVoxEngine:
         text: str = "",
         final_text: Optional[str] = None,
         error: Optional[str] = None,
+        smart_profile: Optional[str] = None,
+        smart_profile_label: Optional[str] = None,
     ) -> None:
         self.runtime.emit_smart_preview(
             run_id=run_id,
@@ -293,7 +342,125 @@ class SteerVoxEngine:
             text=text,
             final_text=final_text,
             error=error,
+            smart_profile=smart_profile,
+            smart_profile_label=smart_profile_label,
         )
+
+    def create_local_task_run(
+        self,
+        *,
+        request_text: str,
+        command: Optional[str],
+        cwd: Optional[str] = None,
+        title: Optional[str] = None,
+        source_intent: str = "local_task",
+        run_kind: str = "single_step",
+        plan_summary: Optional[str] = None,
+        steps: Optional[list[LocalTaskStep]] = None,
+    ) -> dict[str, Any]:
+        if self._is_processing:
+            raise RuntimeError("SteerVox is already busy with a voice pipeline.")
+        return self.local_task_shell.create_run(
+            LocalTaskCreateRequest(
+                request_text=request_text,
+                command=command,
+                cwd=cwd,
+                title=title,
+                source_intent=source_intent,
+                run_kind=run_kind,
+                plan_summary=plan_summary,
+                steps=list(steps or []),
+            )
+        )
+
+    def approve_local_task_review(
+        self,
+        *,
+        run_id: str,
+        review_id: str,
+        retry_mode: Optional[TaskRetryMode] = None,
+    ) -> dict[str, Any]:
+        return self.local_task_shell.approve_review(run_id=run_id, review_id=review_id, retry_mode=retry_mode)
+
+    def reject_local_task_review(self, *, run_id: str, review_id: str) -> dict[str, Any]:
+        return self.local_task_shell.reject_review(run_id=run_id, review_id=review_id)
+
+    def cancel_local_task_run(self, *, run_id: str) -> dict[str, Any]:
+        return self.local_task_shell.cancel_run(run_id=run_id)
+
+    def get_local_task_run(self, run_id: str) -> Optional[dict[str, Any]]:
+        return self.local_task_shell.get_run(run_id)
+
+    def list_local_task_runs(self, *, limit: int = 20) -> list[dict[str, Any]]:
+        return self.local_task_shell.list_runs(limit=limit)
+
+    def _handle_local_task_finished(self, run, result_summary) -> None:
+        saved_to_history = False
+        saved_to_inbox = False
+        try:
+            history_plan_kind = None
+            if run.source_intent == "computer_use":
+                history_plan_kind = "multi_step" if run.run_kind == "multi_step" else "local_task"
+            self.writing_tools_store.record_history(
+                mode="local_task",
+                transcript=run.request_text,
+                final_output=result_summary.output_excerpt or result_summary.summary,
+                telemetry={
+                    "intent": run.source_intent,
+                    "computer_use_plan_kind": history_plan_kind,
+                    "status": result_summary.status,
+                    "command": run.command,
+                    "cwd": run.cwd,
+                    "exit_code": result_summary.exit_code,
+                    "plan_summary": result_summary.plan_summary,
+                    "step_count": result_summary.step_count,
+                    "completed_steps": result_summary.completed_steps,
+                    "failed_step_id": result_summary.failed_step_id,
+                    "failed_step_title": result_summary.failed_step_title,
+                },
+                context=self.captured_context,
+                stt_provider=None,
+                stt_model=None,
+                llm_provider=None,
+                llm_model=None,
+            )
+            saved_to_history = True
+            self._emit_runtime_event("history_invalidated")
+        except Exception as exc:
+            logger.warning("[Engine] Failed to record local task history for %s: %s", run.run_id, exc)
+
+        try:
+            excerpt = result_summary.output_excerpt or result_summary.summary
+            if excerpt:
+                self.inbox_store.append_note(
+                    build_inbox_note(
+                        f"{run.title}\n\n{excerpt}".strip(),
+                        context=self.captured_context,
+                        source_mode="local_task",
+                        source_kind="task_result",
+                        output_mode="code",
+                    )
+                )
+                saved_to_inbox = True
+                self._emit_runtime_event("inbox_invalidated")
+        except Exception as exc:
+            logger.warning("[Engine] Failed to save local task note for %s: %s", run.run_id, exc)
+
+        summary_payload = self.local_task_shell.last_result_summary or {}
+        if summary_payload:
+            summary_payload["saved_to_history"] = saved_to_history
+            summary_payload["saved_to_inbox"] = saved_to_inbox
+
+        if result_summary.status == "completed":
+            self.last_error = None
+            self.pending_notification = {
+                "title": "Local task completed",
+                "body": result_summary.summary,
+            }
+            self._emit_runtime_event("notification")
+        else:
+            self.last_error = result_summary.summary
+        self._emit_runtime_event("status")
 
     def _has_usable_text(self, text: Optional[str]) -> bool:
         stripped = (text or "").strip()
@@ -418,6 +585,9 @@ class SteerVoxEngine:
         self._set_phase("error")
         self._emit_runtime_event("status")
         self._schedule_action_error_clear(error_message=message)
+
+    def _complete_transient_smart_error(self, message: str) -> None:
+        self._complete_transient_action_error(message)
 
     def _schedule_action_error_clear(
         self,
@@ -699,7 +869,19 @@ class SteerVoxEngine:
                 domain_llm_override["model"],
             )
         preview_run_id = str(uuid4())
-        self._emit_smart_preview(run_id=preview_run_id, state="started")
+        preview_provider = str(
+            getattr(run_processor, "provider", None)
+            or (domain_llm_override or {}).get("provider")
+            or config.llm.provider
+        ).strip().lower()
+        preview_smart_profile = "local_compact" if preview_provider == "lmstudio" else "default"
+        preview_smart_profile_label = "Local Smart profile" if preview_smart_profile == "local_compact" else None
+        self._emit_smart_preview(
+            run_id=preview_run_id,
+            state="started",
+            smart_profile=preview_smart_profile,
+            smart_profile_label=preview_smart_profile_label,
+        )
         try:
             result = run_processor.process(
                 payload.transcript,
@@ -713,6 +895,8 @@ class SteerVoxEngine:
                     run_id=preview_run_id,
                     state="streaming",
                     text=text,
+                    smart_profile=preview_smart_profile,
+                    smart_profile_label=preview_smart_profile_label,
                 ),
                 experimental_media_controls_enabled=config.actions.experimental_media_controls,
                 memory_context_block=memory_context_block or None,
@@ -724,6 +908,8 @@ class SteerVoxEngine:
                 state="error",
                 text=self._current_smart_preview_text(preview_run_id),
                 error=str(exc),
+                smart_profile=preview_smart_profile,
+                smart_profile_label=preview_smart_profile_label,
             )
             raise
         self.last_smart_run = result.telemetry.model_dump(mode="json")
@@ -735,6 +921,8 @@ class SteerVoxEngine:
                 state="done",
                 text=preview_text,
                 final_text=preview_text,
+                smart_profile=preview_smart_profile,
+                smart_profile_label=preview_smart_profile_label,
             )
             logger.info("[Engine] ✓ Reviewed action prepared (%s).", result.pending_action_review.action_type)
             return result
@@ -746,6 +934,8 @@ class SteerVoxEngine:
                 state="done",
                 text=preview_text,
                 final_text=preview_text,
+                smart_profile=preview_smart_profile,
+                smart_profile_label=preview_smart_profile_label,
             )
             logger.info("[Engine] ✓ Auto action prepared (%s).", result.auto_action.action_type)
             return result
@@ -756,8 +946,22 @@ class SteerVoxEngine:
                 state="error",
                 text=self._current_smart_preview_text(preview_run_id),
                 error=result.action_error,
+                smart_profile=preview_smart_profile,
+                smart_profile_label=preview_smart_profile_label,
             )
             logger.warning("[Engine] Smart processor returned a transient action error: %s", result.action_error)
+            return result
+
+        if result.refusal_message:
+            self._emit_smart_preview(
+                run_id=preview_run_id,
+                state="error",
+                text=self._current_smart_preview_text(preview_run_id),
+                error=result.refusal_message,
+                smart_profile=preview_smart_profile,
+                smart_profile_label=preview_smart_profile_label,
+            )
+            logger.warning("[Engine] Smart processor refused the request under the local compact profile: %s", result.refusal_message)
             return result
 
         if not result.final_text:
@@ -767,6 +971,8 @@ class SteerVoxEngine:
                 state="error",
                 text=self._current_smart_preview_text(preview_run_id),
                 error="Smart Mode did not produce usable output.",
+                smart_profile=preview_smart_profile,
+                smart_profile_label=preview_smart_profile_label,
             )
             raise RuntimeError("Smart Mode did not produce usable output.")
 
@@ -775,6 +981,8 @@ class SteerVoxEngine:
             state="done",
             text=result.final_text,
             final_text=result.final_text,
+            smart_profile=preview_smart_profile,
+            smart_profile_label=preview_smart_profile_label,
         )
 
         if self._should_log_sensitive_transcripts():
@@ -1218,6 +1426,19 @@ class SteerVoxEngine:
                         self._emit_runtime_event("pending_action_review")
                         self._emit_runtime_event("status")
                     return
+                if smart_result.local_task_request is not None:
+                    self.create_local_task_run(
+                        request_text=smart_result.local_task_request.request_text,
+                        command=smart_result.local_task_request.command,
+                        cwd=smart_result.local_task_request.cwd,
+                        title=smart_result.local_task_request.title or "Local task",
+                        source_intent=smart_result.local_task_request.source_intent,
+                        run_kind=smart_result.local_task_request.run_kind,
+                        plan_summary=smart_result.local_task_request.plan_summary,
+                        steps=smart_result.local_task_request.steps,
+                    )
+                    self._mark_pipeline_timing("transform_done")
+                    return
                 if smart_result.action_error:
                     logger.warning(
                         "[Engine] Smart action resolution failed kind=%s error=%s",
@@ -1225,6 +1446,14 @@ class SteerVoxEngine:
                         smart_result.action_error,
                     )
                     self._complete_transient_action_error(smart_result.action_error)
+                    return
+                if smart_result.refusal_message:
+                    logger.warning(
+                        "[Engine] Smart request refused under profile=%s reason=%s",
+                        (self.last_smart_run or {}).get("smart_profile"),
+                        smart_result.refusal_message,
+                    )
+                    self._complete_transient_smart_error(smart_result.refusal_message)
                     return
                 if smart_result.auto_action is not None:
                     try:
@@ -1544,6 +1773,7 @@ class SteerVoxEngine:
 
     def shutdown(self):
         logger.info("[Engine] Shutting down orchestrator...")
+        self.local_task_shell.shutdown()
         close_client = getattr(self.stt_client, "close", None)
         if callable(close_client):
             close_client()

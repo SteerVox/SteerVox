@@ -52,6 +52,49 @@ export function applyProviderSelection(
       provider: newProvider,
       model: nextModel,
     },
+    ...(section === 'llm'
+      ? {
+          llm: {
+            ...draftConfig.llm,
+            provider: newProvider,
+            model: nextModel,
+            routing: {
+              ...draftConfig.llm.routing,
+              provider: newProvider,
+              model: nextModel,
+            },
+          },
+        }
+      : {}),
+  }
+}
+
+export function applyModelSelection(
+  draftConfig: AppConfig,
+  section: ProviderSection,
+  newModel: string,
+): AppConfig {
+  if (section === 'llm') {
+    return {
+      ...draftConfig,
+      llm: {
+        ...draftConfig.llm,
+        model: newModel,
+        routing: {
+          ...draftConfig.llm.routing,
+          provider: draftConfig.llm.provider,
+          model: newModel,
+        },
+      },
+    }
+  }
+
+  return {
+    ...draftConfig,
+    stt: {
+      ...draftConfig.stt,
+      model: newModel,
+    },
   }
 }
 

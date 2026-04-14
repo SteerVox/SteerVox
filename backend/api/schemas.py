@@ -2,7 +2,8 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from local_task_shell.models import LocalTaskStep, TaskRetryMode
 
 
 class APIKeyPayload(BaseModel):
@@ -65,6 +66,26 @@ class PasteAckPayload(BaseModel):
 
 
 class ActionReviewDecisionPayload(BaseModel):
+    run_id: str
+
+
+class LocalTaskCreatePayload(BaseModel):
+    request_text: str
+    command: Optional[str] = None
+    cwd: Optional[str] = None
+    title: Optional[str] = None
+    run_kind: str = "single_step"
+    plan_summary: Optional[str] = None
+    steps: list[LocalTaskStep] = Field(default_factory=list)
+
+
+class LocalTaskReviewDecisionPayload(BaseModel):
+    run_id: str
+    review_id: str
+    retry_mode: Optional[TaskRetryMode] = None
+
+
+class LocalTaskCancelPayload(BaseModel):
     run_id: str
 
 

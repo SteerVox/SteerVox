@@ -1,5 +1,6 @@
-from action_execution import ActionResolutionError
+from action_execution import ActionBuildResult, ActionResolutionError, PendingActionReview
 from agent.processor import SmartModeProcessor
+from agent.skills.defaults import DefaultSkills
 from agent.skills.manager import SkillManager
 from agent.supervisor import SupervisorResponse
 from agent.smart_router_agent import SmartRouterAgentResult
@@ -126,6 +127,34 @@ def test_processor_enforces_skill_max_chars_for_plain_text_outputs():
     assert result.telemetry.payload_estimated_bytes == 321
 
 
+def test_processor_keeps_prompt_heavy_outputs_above_old_codex_cap():
+    skill_manager = SkillManager()
+    fake_agent = FakeSupervisorAgent("Detailed migration brief. " * 80)
+    processor = SmartModeProcessor(
+        provider="groq",
+        model="demo",
+        temperature=0.0,
+        skill_manager=skill_manager,
+        agent=fake_agent,
+    )
+
+    result = processor.process(
+        "perform deep research on the auth migration, compare rollout options, and include verification steps",
+        {
+            "app_name": "Codex",
+            "window_title": "repo",
+            "context_quality": "full",
+            "target_type": "ide",
+        },
+        DefaultSkills.CODEX_PROMPT.id,
+    )
+
+    assert result.lane == SmartLane.LLM
+    assert fake_agent.calls == 1
+    assert len(result.final_text) == len(fake_agent.text)
+    assert len(result.final_text) > 1000
+
+
 def test_processor_records_requested_skill_override_provenance():
     skill_manager = SkillManager()
     skill_manager.add_custom_skill({
@@ -193,6 +222,188 @@ def test_processor_preserves_requested_skill_when_auto_routing_uses_a_different_
     assert result.telemetry.skill_router_resolver == "local"
 
 
+def test_processor_builds_local_task_request_for_explicit_local_task_skill():
+    fake_agent = FakeSupervisorAgent("should not be used")
+    processor = SmartModeProcessor(
+        provider="lmstudio",
+        model="local-model",
+        temperature=0.0,
+        agent=fake_agent,
+    )
+
+    result = processor.process(
+        "run git status",
+        {
+            "app_name": "Cursor",
+            "window_title": "repo",
+            "context_quality": "full",
+            "target_type": "ide",
+        },
+        DefaultSkills.LOCAL_TASK.id,
+    )
+
+    assert result.intent == SmartIntent.LOCAL_TASK
+    assert result.local_task_request is not None
+    assert result.local_task_request.command == "git status"
+    assert result.local_task_request.source_intent == "local_task"
+    assert result.final_text == ""
+    assert fake_agent.calls == 0
+
+
+def test_processor_builds_local_task_request_for_computer_use_repo_search():
+    fake_agent = FakeSupervisorAgent("should not be used")
+    processor = SmartModeProcessor(
+        provider="lmstudio",
+        model="local-model",
+        temperature=0.0,
+        agent=fake_agent,
+    )
+
+    result = processor.process(
+        "search the repo for LocalTaskShellService",
+        {
+            "app_name": "Cloud Code",
+            "window_title": "repo",
+            "context_quality": "full",
+            "target_type": "ide",
+            "workspace_root": "/tmp/steervox",
+        },
+        DefaultSkills.CLOUD_CODE_PROMPT.id,
+    )
+
+    assert result.intent == SmartIntent.COMPUTER_USE
+    assert result.local_task_request is not None
+    assert result.local_task_request.command == "rg -n -- LocalTaskShellService ."
+    assert result.local_task_request.source_intent == "computer_use"
+    assert result.telemetry.computer_use_trigger == "action_phrase"
+    assert result.telemetry.computer_use_plan_kind == "local_task"
+    assert fake_agent.calls == 0
+
+
+def test_processor_uses_selection_text_for_computer_use_file_search():
+    fake_agent = FakeSupervisorAgent("should not be used")
+    processor = SmartModeProcessor(
+        provider="lmstudio",
+        model="local-model",
+        temperature=0.0,
+        agent=fake_agent,
+    )
+
+    result = processor.process(
+        "browse through the file and find me this",
+        {
+            "app_name": "Cursor",
+            "window_title": "parser.ts",
+            "context_quality": "full",
+            "target_type": "ide",
+            "code_file_name": "parser.ts",
+        },
+        DefaultSkills.DICTATION.id,
+        selection_text="LocalTaskShellService",
+    )
+
+    assert result.intent == SmartIntent.COMPUTER_USE
+    assert result.local_task_request is not None
+    assert result.local_task_request.command == "rg -n -- LocalTaskShellService parser.ts"
+    assert result.local_task_request.source_intent == "computer_use"
+    assert result.telemetry.computer_use_plan_kind == "local_task"
+
+
+def test_processor_builds_multi_step_local_task_request_for_computer_use(monkeypatch):
+    fake_agent = FakeSupervisorAgent("should not be used")
+    processor = SmartModeProcessor(
+        provider="lmstudio",
+        model="local-model",
+        temperature=0.0,
+        agent=fake_agent,
+    )
+
+    monkeypatch.setattr(
+        processor.reviewed_action_builder,
+        "build",
+        lambda **_kwargs: ActionBuildResult(
+            pending_review=PendingActionReview(
+                run_id="desktop-review-1",
+                action_type="open_app",
+                title="Open Finder",
+                summary="Open Finder.",
+                script='tell application id "com.apple.finder"\nreopen\nactivate\nend tell',
+            )
+        ),
+    )
+
+    result = processor.process(
+        "open Finder and search the repo for LocalTaskShellService",
+        {
+            "app_name": "Cursor",
+            "window_title": "repo",
+            "context_quality": "full",
+            "target_type": "ide",
+        },
+        DefaultSkills.COMPUTER_USE.id,
+    )
+
+    assert result.intent == SmartIntent.COMPUTER_USE
+    assert result.local_task_request is not None
+    assert result.local_task_request.run_kind == "multi_step"
+    assert result.local_task_request.source_intent == "computer_use"
+    assert result.local_task_request.command is None
+    assert len(result.local_task_request.steps) == 2
+    assert result.local_task_request.steps[0].kind == "desktop_action"
+    assert result.local_task_request.steps[0].script is not None
+    assert result.local_task_request.steps[1].kind == "shell_command"
+    assert result.local_task_request.steps[1].command == "rg -n -- LocalTaskShellService ."
+    assert result.telemetry.computer_use_plan_kind == "multi_step"
+    assert fake_agent.calls == 0
+
+
+def test_processor_builds_bounded_youtube_browser_plan_for_computer_use(monkeypatch):
+    fake_agent = FakeSupervisorAgent("should not be used")
+    processor = SmartModeProcessor(
+        provider="lmstudio",
+        model="local-model",
+        temperature=0.0,
+        agent=fake_agent,
+    )
+    monkeypatch.setattr(
+        processor.reviewed_action_builder,
+        "build_planned_step",
+        lambda planned_step, **_kwargs: ActionBuildResult(
+            pending_review=PendingActionReview(
+                run_id=f"review-{planned_step.action_type}",
+                action_type=planned_step.action_type,
+                title=planned_step.title,
+                summary=planned_step.summary,
+                script=f"-- {planned_step.action_type}",
+            )
+        ),
+    )
+
+    result = processor.process(
+        "open Chrome and play indie songs on YouTube",
+        {
+            "app_name": "Codex",
+            "window_title": "repo",
+            "context_quality": "full",
+            "target_type": "ide",
+        },
+        DefaultSkills.DICTATION.id,
+        resolved_skill_id=DefaultSkills.CODEX_PROMPT.id,
+    )
+
+    assert result.intent == SmartIntent.COMPUTER_USE
+    assert result.local_task_request is not None
+    assert result.local_task_request.run_kind == "multi_step"
+    assert len(result.local_task_request.steps) == 4
+    assert result.local_task_request.steps[0].action_type == "open_app"
+    assert result.local_task_request.steps[1].action_type == "open_url"
+    assert result.local_task_request.steps[2].action_type == "youtube_open_first_result"
+    assert result.local_task_request.steps[3].action_type == "youtube_ensure_playing"
+    assert result.action_error is None
+    assert result.telemetry.computer_use_plan_kind == "multi_step"
+    assert fake_agent.calls == 0
+
+
 def test_processor_uses_smart_router_for_ambiguous_llm_routes():
     fake_agent = FakeSupervisorAgent("def parse_payload(data):\n    return data.strip()\n")
     fake_router_agent = FakeSmartRouterAgent(
@@ -226,7 +437,7 @@ def test_processor_uses_smart_router_for_ambiguous_llm_routes():
     assert fake_router_agent.calls == 1
     assert result.intent == SmartIntent.CODE_REFACTOR
     assert result.lane == SmartLane.LLM
-    assert result.telemetry.planner_resolver == "groq"
+    assert result.telemetry.planner_resolver == "model"
     assert result.telemetry.planner_model_attempted is True
     assert result.telemetry.planner_model_error is None
 
@@ -385,7 +596,7 @@ def test_processor_keeps_smart_mode_fully_local_for_lmstudio():
     assert result.telemetry.planner_model_attempted is False
 
 
-def test_processor_allows_local_smart_router_for_lmstudio_when_router_is_local():
+def test_processor_skips_local_smart_router_for_lmstudio_even_when_configured():
     fake_agent = FakeSupervisorAgent("Selected text made polite.")
     fake_router_agent = FakeSmartRouterAgent(
         SmartRouterAgentResult(
@@ -417,9 +628,10 @@ def test_processor_allows_local_smart_router_for_lmstudio_when_router_is_local()
         "system_dictation",
     )
 
-    assert fake_router_agent.calls == 1
-    assert result.lane == SmartLane.LLM
-    assert result.telemetry.planner_model_attempted is True
+    assert fake_router_agent.calls == 0
+    assert result.intent == SmartIntent.LOCAL_UNSUPPORTED
+    assert result.lane == SmartLane.REFUSED
+    assert result.telemetry.planner_model_attempted is False
 
 
 def test_processor_falls_back_to_safe_local_cleanup_when_lmstudio_returns_empty_output():
@@ -482,7 +694,7 @@ def test_processor_normalizes_compact_local_labeled_segments_into_bullets():
     assert "normalize_local_labeled_segments" in result.deterministic_operations
 
 
-def test_processor_formats_medical_domain_sections_for_readability():
+def test_processor_bypasses_local_compact_for_medical_domain_note_generation():
     fake_agent = FakeSupervisorAgent(
         "HPI: Patient reports left-sided toothache for two months with intermittent clicking and popping sounds; denies other dental symptoms, decay, or recent tooth-related issues. Assessment details: pain duration noted, no visible decay or inspection findings. Follow-up: clinical review of clicking mechanism discussed."
     )
@@ -506,12 +718,46 @@ def test_processor_formats_medical_domain_sections_for_readability():
         domain_id="medical",
     )
 
+    assert result.intent == SmartIntent.GENERIC
+    assert result.lane == SmartLane.LLM
+    assert fake_agent.calls == 1
     assert result.final_text == "\n\n".join([
         "HPI: Patient reports left-sided toothache for two months with intermittent clicking and popping sounds; denies other dental symptoms, decay, or recent tooth-related issues.",
         "Assessment details: pain duration noted, no visible decay or inspection findings.",
         "Follow-up: clinical review of clicking mechanism discussed.",
     ])
-    assert "normalize_medical_note_sections" in result.deterministic_operations
+    assert result.telemetry.smart_profile == "default"
+    assert "local_compact_contract_id" not in (fake_agent.last_context or {})
+
+
+def test_processor_bypasses_local_compact_for_domain_email_generation():
+    fake_agent = FakeSupervisorAgent("Subject: Shift handover update\n\nDear Team,\nContainer ETA moved to tomorrow.\n\nBest regards,")
+    processor = SmartModeProcessor(
+        provider="lmstudio",
+        model="nvidia/nemotron-3-nano-4b",
+        temperature=0.0,
+        agent=fake_agent,
+    )
+
+    result = processor.process(
+        "draft a handover update",
+        {
+            "app_name": "Gmail",
+            "window_title": "Compose",
+            "context_quality": "full",
+            "target_type": "generic",
+            "surface_kind": "email_body",
+        },
+        "system_domain_email",
+        domain_id="shipping",
+        domain_skill_id="system_domain_email",
+    )
+
+    assert result.lane == SmartLane.LLM
+    assert fake_agent.calls == 1
+    assert result.final_text == fake_agent.text
+    assert result.telemetry.smart_profile == "default"
+    assert "local_compact_contract_id" not in (fake_agent.last_context or {})
 
 
 def test_processor_forwards_stream_preview_updates_to_the_supervisor_agent():
@@ -804,9 +1050,11 @@ def test_processor_prioritizes_explicit_actions_over_prompt_site_skill(monkeypat
         requested_app_override_label="ChatGPT",
     )
 
-    assert result.intent == SmartIntent.ACTION_EXECUTION
+    assert result.intent == SmartIntent.COMPUTER_USE
     assert result.auto_action is not None
     assert result.auto_action.action_type == "focus_field"
+    assert result.telemetry.computer_use_trigger == "action_phrase"
+    assert result.telemetry.computer_use_plan_kind == "desktop_action"
     assert result.final_text == ""
     assert fake_agent.calls == 0
 
@@ -1155,11 +1403,13 @@ def test_processor_returns_reviewed_action_payload_without_hitting_supervisor(mo
         "system_dictation",
     )
 
-    assert result.intent == SmartIntent.ACTION_EXECUTION
+    assert result.intent == SmartIntent.COMPUTER_USE
     assert result.pending_action_review is not None
     assert result.pending_action_review.action_type == "open_url"
     assert result.auto_action is None
     assert result.final_text == ""
+    assert result.telemetry.computer_use_trigger == "action_phrase"
+    assert result.telemetry.computer_use_plan_kind == "desktop_action"
     assert result.telemetry.action_review_required is True
     assert result.telemetry.action_execution_mode == "reviewed"
     assert fake_agent.calls == 0
@@ -1211,10 +1461,11 @@ def test_processor_returns_auto_action_for_low_risk_ui_requests(monkeypatch):
         "system_dictation",
     )
 
-    assert result.intent == SmartIntent.ACTION_EXECUTION
+    assert result.intent == SmartIntent.COMPUTER_USE
     assert result.pending_action_review is None
     assert result.auto_action is not None
     assert result.auto_action.action_type == "focus_field"
+    assert result.telemetry.computer_use_plan_kind == "desktop_action"
     assert result.telemetry.action_review_required is False
     assert result.telemetry.action_execution_mode == "auto"
 
@@ -1245,7 +1496,7 @@ def test_processor_returns_structured_action_error_for_resolution_failures(monke
         "system_dictation",
     )
 
-    assert result.intent == SmartIntent.ACTION_EXECUTION
+    assert result.intent == SmartIntent.COMPUTER_USE
     assert result.pending_action_review is None
     assert result.auto_action is None
     assert result.final_text == ""
@@ -1281,7 +1532,7 @@ def test_processor_returns_structured_action_error_when_action_builder_times_out
         "system_dictation",
     )
 
-    assert result.intent == SmartIntent.ACTION_EXECUTION
+    assert result.intent == SmartIntent.COMPUTER_USE
     assert result.pending_action_review is None
     assert result.auto_action is None
     assert result.final_text == ""
@@ -1318,7 +1569,7 @@ def test_processor_returns_structured_action_error_when_actions_are_disabled(mon
     )
 
     assert build_calls["count"] == 0
-    assert result.intent == SmartIntent.ACTION_EXECUTION
+    assert result.intent == SmartIntent.COMPUTER_USE
     assert result.pending_action_review is None
     assert result.auto_action is None
     assert result.final_text == ""
@@ -1464,6 +1715,7 @@ def test_processor_uses_screen_context_as_source_material_for_local_screen_summa
         "system_dictation",
     )
 
-    assert fake_agent.last_context["external_text_source"] == "screen_context"
-    assert result.final_text == "Dashboard shows delayed shipments, open tasks, and three overdue items."
-    assert "local_instruction_echo_fallback" in result.deterministic_operations
+    assert fake_agent.calls == 0
+    assert result.intent == SmartIntent.LOCAL_UNSUPPORTED
+    assert result.lane == SmartLane.REFUSED
+    assert result.refusal_message is not None

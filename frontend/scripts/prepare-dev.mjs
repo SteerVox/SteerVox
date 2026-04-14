@@ -43,7 +43,7 @@ async function ensureBackendDevRuntime() {
   const pythonReady = await fileExists(backendPythonPath, fsConstants.X_OK)
   if (!pythonReady) {
     throw new Error(
-      `Backend virtualenv is missing at ${backendPythonPath}. Create backend/.venv before running npm run dev.`,
+      `Backend virtualenv is missing at ${backendPythonPath}. Run ./scripts/setup-dev.sh from the repo root before running npm run dev.`,
     )
   }
 

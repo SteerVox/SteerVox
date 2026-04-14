@@ -41,14 +41,25 @@ class ConfigManager:
         payload = AppConfig().model_dump()
         payload.setdefault("actions", {})
         payload["actions"]["experimental_media_controls"] = self._resolve_experimental_media_default()
-        return payload
+        return self._normalize_config_payload(payload)
 
-    def _apply_dynamic_defaults(self, data: dict) -> dict:
+    def _normalize_config_payload(self, data: dict) -> dict:
         next_data = dict(data or {})
         actions = dict(next_data.get("actions") or {})
         if "experimental_media_controls" not in actions:
             actions["experimental_media_controls"] = self._resolve_experimental_media_default()
         next_data["actions"] = actions
+
+        llm = dict(next_data.get("llm") or {})
+        llm_provider = str(llm.get("provider") or AppConfig().llm.provider).strip() or AppConfig().llm.provider
+        llm_model = str(llm.get("model") or AppConfig().llm.model).strip() or AppConfig().llm.model
+        routing = dict(llm.get("routing") or {})
+        routing["provider"] = llm_provider
+        routing["model"] = llm_model
+        llm["provider"] = llm_provider
+        llm["model"] = llm_model
+        llm["routing"] = routing
+        next_data["llm"] = llm
         return next_data
 
     def _save_raw(self, data: dict) -> bool:
@@ -74,7 +85,7 @@ class ConfigManager:
         try:
             with open(self.CONFIG_FILE, 'r') as f:
                 data = json.load(f)
-            loaded_data = self._apply_dynamic_defaults(data)
+            loaded_data = self._normalize_config_payload(data)
             self._config = AppConfig(**loaded_data)
             normalized = self._config.model_dump()
             if normalized != loaded_data:
@@ -107,6 +118,7 @@ class ConfigManager:
             return d
             
         updated_data = pretty_deep_update(current_data, new_data)
+        updated_data = self._normalize_config_payload(updated_data)
         
         try:
             # Validate through Pydantic

@@ -11,6 +11,7 @@ from langchain_core.runnables import RunnableLambda
 from providers.model_discovery import ModelDiscovery
 
 
+LMSTUDIO_OPENAI_BASE_URL = "http://localhost:1234/v1"
 LMSTUDIO_NATIVE_BASE_URL = "http://localhost:1234/api/v1"
 DEFAULT_TIMEOUT_SECONDS = 30.0
 DISCOVERY_TIMEOUT_SECONDS = 2.0
@@ -27,6 +28,7 @@ def build_lmstudio_native_runnable(
     max_tokens: int | None = None,
     context_length: int | None = None,
     reasoning_mode: str | None = None,
+    response_format: dict[str, Any] | None = None,
 ):
     client = LMStudioNativeChat(
         model=model,
@@ -36,6 +38,7 @@ def build_lmstudio_native_runnable(
         max_tokens=max_tokens,
         context_length=context_length,
         reasoning_mode=reasoning_mode,
+        response_format=response_format,
     )
     runnable = RunnableLambda(client.invoke)
     setattr(runnable, "native_client", client)
@@ -57,6 +60,7 @@ class LMStudioNativeChat:
         max_tokens: int | None = None,
         context_length: int | None = None,
         reasoning_mode: str | None = None,
+        response_format: dict[str, Any] | None = None,
     ):
         self.model = model
         self.temperature = temperature
@@ -65,6 +69,7 @@ class LMStudioNativeChat:
         self.max_tokens = max_tokens
         self.context_length = context_length
         self.reasoning_mode = reasoning_mode
+        self.response_format = response_format
         self._reasoning_disabled = False
 
     def invoke(self, prompt_input: Any) -> AIMessage:
@@ -77,8 +82,8 @@ class LMStudioNativeChat:
         return AIMessage(
             content=_extract_output_text(data),
             additional_kwargs={
-                "lmstudio_stats": data.get("stats", {}),
-                "lmstudio_response_id": data.get("response_id"),
+                "lmstudio_stats": data.get("usage", {}) or data.get("stats", {}),
+                "lmstudio_response_id": data.get("id") or data.get("response_id"),
                 "lmstudio_model_instance_id": data.get("model_instance_id"),
             },
         )
@@ -87,31 +92,61 @@ class LMStudioNativeChat:
         payload, headers, model_id = self._build_chat_request(prompt_input, stream=True)
         response = self._post_chat(payload, headers, stream_response=True)
 
+        accumulated_text = ""
+        completed = False
         try:
-            for event_name, event_data in _iter_sse_events(response):
-                if event_name == "error":
-                    error_message = _extract_stream_error_message(event_data, model_id=model_id)
+            for event_data in _iter_openai_stream_events(response):
+                error_message = _extract_stream_error_message(event_data, model_id=model_id)
+                if error_message:
                     yield {
-                        "event": event_name,
+                        "event": "error",
                         "data": event_data,
                         "error_message": error_message,
                     }
                     continue
 
-                if event_name == "chat.end":
-                    result_payload = event_data.get("result") if isinstance(event_data, dict) else None
-                    result = result_payload if isinstance(result_payload, dict) else {}
-                    error_message = _extract_error_message(result, status_code=response.status_code, model_id=model_id)
+                delta = _extract_openai_delta_text(event_data)
+                if delta:
+                    accumulated_text += delta
                     yield {
-                        "event": event_name,
-                        "data": event_data,
-                        "error_message": error_message,
+                        "event": "message.delta",
+                        "data": {"content": delta},
+                        "error_message": None,
                     }
                     continue
 
+                if _is_openai_stream_finished(event_data) and not completed:
+                    completed = True
+                    yield {
+                        "event": "chat.end",
+                        "data": {
+                            "result": {
+                                "choices": [
+                                    {
+                                        "message": {
+                                            "content": accumulated_text,
+                                        }
+                                    }
+                                ]
+                            }
+                        },
+                        "error_message": None,
+                    }
+                    continue
+            if accumulated_text and not completed:
                 yield {
-                    "event": event_name,
-                    "data": event_data,
+                    "event": "chat.end",
+                    "data": {
+                        "result": {
+                            "choices": [
+                                {
+                                    "message": {
+                                        "content": accumulated_text,
+                                    }
+                                }
+                            ]
+                        }
+                    },
                     "error_message": None,
                 }
         finally:
@@ -121,23 +156,26 @@ class LMStudioNativeChat:
         return extract_lmstudio_output_text(payload)
 
     def _build_chat_request(self, prompt_input: Any, *, stream: bool) -> tuple[dict[str, Any], dict[str, str], str]:
-        system_prompt, user_input = _split_prompt_input(prompt_input)
+        messages = _build_openai_messages(prompt_input)
         model_id = self._resolve_model_id()
+        effective_context_length = ModelDiscovery.lmstudio_resolve_request_context_length(
+            model_id,
+            self.context_length,
+        )
         payload: dict[str, Any] = {
             "model": model_id,
-            "input": user_input,
+            "messages": messages,
             "temperature": self.temperature,
             "stream": stream,
-            "store": False,
         }
-        if system_prompt:
-            payload["system_prompt"] = system_prompt
         if self.max_tokens is not None:
-            payload["max_output_tokens"] = self.max_tokens
-        if self.context_length is not None:
-            payload["context_length"] = self.context_length
+            payload["max_tokens"] = self.max_tokens
+        if effective_context_length is not None:
+            payload["context_length"] = effective_context_length
         if self.reasoning_mode is not None and not self._reasoning_disabled:
             payload["reasoning"] = self.reasoning_mode
+        if self.response_format is not None:
+            payload["response_format"] = self.response_format
 
         headers = {"Content-Type": "application/json"}
         if self.api_key:
@@ -213,7 +251,7 @@ class LMStudioNativeChat:
     def _post_chat(self, payload: dict[str, Any], headers: dict[str, str], *, stream_response: bool):
         response = self._request(
             "POST",
-            f"{LMSTUDIO_NATIVE_BASE_URL}/chat",
+            f"{LMSTUDIO_OPENAI_BASE_URL}/chat/completions",
             json=payload,
             headers=headers,
             timeout=self.timeout,
@@ -225,7 +263,7 @@ class LMStudioNativeChat:
             retry_payload.pop("reasoning", None)
             retry_response = self._request(
                 "POST",
-                f"{LMSTUDIO_NATIVE_BASE_URL}/chat",
+                f"{LMSTUDIO_OPENAI_BASE_URL}/chat/completions",
                 json=retry_payload,
                 headers=headers,
                 timeout=self.timeout,
@@ -270,24 +308,30 @@ class LMStudioNativeChat:
             raise RuntimeError(f"LM Studio request failed before a response was received: {exc}") from exc
 
 
-def _split_prompt_input(prompt_input: Any) -> tuple[str, str]:
+def _build_openai_messages(prompt_input: Any) -> list[dict[str, str]]:
     if isinstance(prompt_input, str):
         stripped = prompt_input.strip()
-        return "", stripped
+        return [{"role": "user", "content": stripped}] if stripped else []
 
     messages = _coerce_messages(prompt_input)
-    system_parts: list[str] = []
-    user_parts: list[str] = []
+    rendered_messages: list[dict[str, str]] = []
     for message in messages:
         content = _content_to_text(getattr(message, "content", ""))
         if not content:
             continue
-        if getattr(message, "type", "") == "system":
-            system_parts.append(content)
+        message_type = str(getattr(message, "type", "") or "").strip().lower()
+        if message_type == "system":
+            role = "system"
+        elif message_type == "ai":
+            role = "assistant"
         else:
-            user_parts.append(content)
+            role = "user"
+        rendered_messages.append({
+            "role": role,
+            "content": content,
+        })
 
-    return "\n\n".join(system_parts).strip(), "\n\n".join(user_parts).strip()
+    return rendered_messages
 
 
 def _coerce_messages(prompt_input: Any) -> list[BaseMessage]:
@@ -333,6 +377,16 @@ def _content_to_text(content: Any) -> str:
 
 
 def _extract_output_text(payload: dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if isinstance(choices, list) and choices:
+        first_choice = choices[0]
+        if isinstance(first_choice, dict):
+            message = first_choice.get("message")
+            if isinstance(message, dict):
+                content = _coerce_text_fragment(message.get("content"))
+                if content:
+                    return _strip_reasoning_artifacts(content)
+
     output_items = payload.get("output")
     if isinstance(output_items, list):
         message_parts = []
@@ -406,10 +460,18 @@ def _iter_sse_events(response: requests.Response) -> Iterator[tuple[str, dict[st
         yield event_name or "message", _coerce_sse_data("\n".join(data_lines))
 
 
+def _iter_openai_stream_events(response: requests.Response) -> Iterator[dict[str, Any]]:
+    for _event_name, event_data in _iter_sse_events(response):
+        if isinstance(event_data, dict):
+            yield event_data
+
+
 def _coerce_sse_data(raw_data: str) -> dict[str, Any]:
     stripped = raw_data.strip()
     if not stripped:
         return {}
+    if stripped == "[DONE]":
+        return {"done": True}
     try:
         payload = json.loads(stripped)
     except ValueError:
@@ -439,6 +501,34 @@ def _extract_stream_error_message(payload: dict[str, Any], *, model_id: Optional
     if not error:
         return None
     return _build_error_message_from_payload(error, status_code=400, model_id=model_id)
+
+
+def _extract_openai_delta_text(payload: dict[str, Any]) -> str:
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return ""
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        return ""
+    delta = first_choice.get("delta")
+    if not isinstance(delta, dict):
+        return ""
+    content = delta.get("content")
+    if isinstance(content, str):
+        return content
+    return _coerce_text_fragment(content)
+
+
+def _is_openai_stream_finished(payload: dict[str, Any]) -> bool:
+    if payload.get("done") is True:
+        return True
+    choices = payload.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return False
+    first_choice = choices[0]
+    if not isinstance(first_choice, dict):
+        return False
+    return bool(str(first_choice.get("finish_reason") or "").strip())
 
 
 def _extract_error_message(payload: dict[str, Any], *, status_code: int, model_id: Optional[str]) -> Optional[str]:

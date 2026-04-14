@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { applyApiKeyProviderSelection, applyProviderSelection } from './providerSettings'
+import { applyApiKeyProviderSelection, applyModelSelection, applyProviderSelection } from './providerSettings'
 import type { AppConfig, ProviderModels } from '../types'
 
 const baseConfig: AppConfig = {
@@ -66,6 +66,7 @@ const baseConfig: AppConfig = {
 const providerModels: ProviderModels = {
   llm: {
     groq: [{ id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B' }],
+    lmstudio: [{ id: 'local-model', name: 'Local Model' }],
   },
   stt: {
     nvidia: [
@@ -99,6 +100,23 @@ describe('providerSettings', () => {
     expect(updated.stt.model).toBe('openai/whisper-large-v3')
     expect(updated.llm.provider).toBe(baseConfig.llm.provider)
     expect(updated.llm.model).toBe(baseConfig.llm.model)
+  })
+
+  it('mirrors the Smart router provider and model when the LLM provider changes', () => {
+    const updated = applyProviderSelection(baseConfig, providerModels, 'llm', 'lmstudio')
+
+    expect(updated.llm.provider).toBe('lmstudio')
+    expect(updated.llm.model).toBe('local-model')
+    expect(updated.llm.routing.provider).toBe('lmstudio')
+    expect(updated.llm.routing.model).toBe('local-model')
+  })
+
+  it('mirrors the Smart router model when the LLM model changes directly', () => {
+    const updated = applyModelSelection(baseConfig, 'llm', 'moonshotai/kimi-k2-instruct-0905')
+
+    expect(updated.llm.model).toBe('moonshotai/kimi-k2-instruct-0905')
+    expect(updated.llm.routing.provider).toBe(baseConfig.llm.provider)
+    expect(updated.llm.routing.model).toBe('moonshotai/kimi-k2-instruct-0905')
   })
 
   it('prefers whisper turbo when switching back to the local stt provider', () => {

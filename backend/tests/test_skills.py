@@ -59,6 +59,7 @@ def test_default_skill_library_includes_basic_app_presets():
         "system_social_post",
         "system_domain_email",
         "system_terminal",
+        "system_computer_use",
         "system_code",
         "system_codex_prompt",
         "system_antigravity_prompt",

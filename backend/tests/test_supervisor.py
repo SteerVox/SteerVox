@@ -3,6 +3,24 @@ from agent.supervisor import SupervisorAgent
 from langchain_core.runnables import RunnableLambda
 
 
+def _mock_loaded_lmstudio_model(monkeypatch, *, model_id: str, context_length: int = 8192):
+    monkeypatch.setattr(
+        "agent.supervisor.ModelDiscovery.get_lmstudio_model_catalog",
+        lambda: [
+            {
+                "key": model_id,
+                "loaded_instances": [
+                    {
+                        "config": {
+                            "context_length": context_length,
+                        }
+                    }
+                ],
+            }
+        ],
+    )
+
+
 def test_supervisor_builds_formal_tone_guidance_for_email_apps():
     agent = SupervisorAgent()
 
@@ -21,7 +39,12 @@ def test_supervisor_builds_casual_tone_guidance_for_chat_apps():
     assert fields == ["tone_guidance"]
 
 
-def test_supervisor_uses_compact_prompt_profile_for_small_lmstudio_models():
+def test_supervisor_uses_compact_prompt_profile_for_small_lmstudio_models(monkeypatch):
+    _mock_loaded_lmstudio_model(
+        monkeypatch,
+        model_id="nvidia/nemotron-3-nano-4b",
+        context_length=8192,
+    )
     agent = SupervisorAgent(provider="lmstudio", model="nvidia/nemotron-3-nano-4b", temperature=0.3)
 
     spec = agent._build_prompt_spec(
@@ -41,7 +64,7 @@ def test_supervisor_uses_compact_prompt_profile_for_small_lmstudio_models():
     assert spec.llm_temperature == 0.1
     assert spec.llm_max_retries == 0
     assert spec.llm_max_tokens == 2200
-    assert spec.llm_context_length == 6144
+    assert spec.llm_context_length == 8192
     assert spec.llm_reasoning_mode == "off"
     assert "--- ACTIVE DOMAIN CONTEXT ---" not in spec.invoke_payload["instructions_block"]
     assert "--- CURRENT EXTERNAL TEXT ---" in spec.invoke_payload["instructions_block"]
@@ -50,7 +73,12 @@ def test_supervisor_uses_compact_prompt_profile_for_small_lmstudio_models():
     assert "Source text to transform (selected text):" in spec.invoke_payload["source_material_block"]
 
 
-def test_supervisor_keeps_full_local_profile_for_prompt_heavy_skills():
+def test_supervisor_keeps_full_local_profile_for_prompt_heavy_skills(monkeypatch):
+    _mock_loaded_lmstudio_model(
+        monkeypatch,
+        model_id="nvidia/nemotron-3-nano-4b",
+        context_length=8192,
+    )
     agent = SupervisorAgent(provider="lmstudio", model="nvidia/nemotron-3-nano-4b", temperature=0.3)
 
     spec = agent._build_prompt_spec(
@@ -70,15 +98,21 @@ def test_supervisor_keeps_full_local_profile_for_prompt_heavy_skills():
     assert spec.llm_context_length == 8192
     assert spec.llm_reasoning_mode == "off"
     assert "--- OUTPUT DEPTH GUIDANCE ---" in spec.invoke_payload["local_depth_section"]
-    assert "Do not collapse this into a one-line or two-line summary." in spec.invoke_payload["local_depth_section"]
-    assert "Use sections such as Role, Objective, Context, Constraints, Output Format, and Edge Cases only when they materially improve the result." in spec.invoke_payload["local_depth_section"]
+    assert "Keep simple requests direct and shorter." in spec.invoke_payload["local_depth_section"]
+    assert "Use sections only when they materially improve the result or when the user is clearly asking for a system or agent prompt." in spec.invoke_payload["local_depth_section"]
+    assert "The transcript asks for substantial detail." not in spec.invoke_payload["local_depth_section"]
 
 
-def test_supervisor_uses_slim_context_for_ai_chat_prompt_skill():
+def test_supervisor_uses_slim_context_for_ai_chat_prompt_skill(monkeypatch):
+    _mock_loaded_lmstudio_model(
+        monkeypatch,
+        model_id="qwen2.5-7b-instruct",
+        context_length=8192,
+    )
     agent = SupervisorAgent(provider="lmstudio", model="qwen2.5-7b-instruct", temperature=0.0)
 
     spec = agent._build_prompt_spec(
-        "research this YouTube transcript and pull out the main claims",
+        "do deep research on this YouTube transcript and pull out the main claims",
         {
             "app_name": "Microsoft Edge",
             "bundle_id": "com.microsoft.edgemac",
@@ -93,6 +127,7 @@ def test_supervisor_uses_slim_context_for_ai_chat_prompt_skill():
     )
 
     assert spec.llm_max_tokens == 3000
+    assert spec.llm_context_length == 8192
     assert "Bundle ID:" not in spec.invoke_payload["context_block"]
     assert "Window Title:" not in spec.invoke_payload["context_block"]
     assert "Context Quality:" not in spec.invoke_payload["context_block"]
@@ -100,10 +135,16 @@ def test_supervisor_uses_slim_context_for_ai_chat_prompt_skill():
     assert "Output Mode: plain_text" in spec.invoke_payload["contract_block"]
     assert "Skill Name:" not in spec.invoke_payload["contract_block"]
     assert spec.invoke_payload["tone_section"] == ""
-    assert "Do not default to Role, Context, Constraints, Output Format, or Edge Cases" in spec.invoke_payload["local_depth_section"]
+    assert "The transcript asks for substantial detail." in spec.invoke_payload["local_depth_section"]
+    assert "Goal, Context, Inputs/Reference Material, Constraints, Deliverables, Output Format, Verification, and Risks/Open Questions." in spec.invoke_payload["local_depth_section"]
 
 
-def test_supervisor_allocates_larger_local_budget_for_coding_agent_prompt_skills():
+def test_supervisor_allocates_larger_local_budget_for_coding_agent_prompt_skills(monkeypatch):
+    _mock_loaded_lmstudio_model(
+        monkeypatch,
+        model_id="qwen2.5-7b-instruct",
+        context_length=8192,
+    )
     agent = SupervisorAgent(provider="lmstudio", model="qwen2.5-7b-instruct", temperature=0.0)
 
     spec = agent._build_prompt_spec(
@@ -118,7 +159,7 @@ def test_supervisor_allocates_larger_local_budget_for_coding_agent_prompt_skills
 
     assert spec.llm_max_tokens == 3000
     assert spec.llm_context_length == 8192
-    assert "implementation details, and verification notes" in spec.invoke_payload["local_depth_section"]
+    assert "Keep the primary requested outcome first" in spec.invoke_payload["local_depth_section"]
 
 
 def test_supervisor_strips_thinking_blocks_from_local_model_output():
@@ -129,7 +170,12 @@ def test_supervisor_strips_thinking_blocks_from_local_model_output():
     assert cleaned == "Final answer only."
 
 
-def test_supervisor_labels_inline_and_screen_source_material_for_local_models():
+def test_supervisor_labels_inline_and_screen_source_material_for_local_models(monkeypatch):
+    _mock_loaded_lmstudio_model(
+        monkeypatch,
+        model_id="nvidia/nemotron-3-nano-4b",
+        context_length=8192,
+    )
     agent = SupervisorAgent(provider="lmstudio", model="nvidia/nemotron-3-nano-4b", temperature=0.0)
 
     inline_spec = agent._build_prompt_spec(
@@ -159,7 +205,12 @@ def test_supervisor_labels_inline_and_screen_source_material_for_local_models():
     assert "Source text to transform (screen context):" in screen_spec.invoke_payload["source_material_block"]
 
 
-def test_supervisor_does_not_inject_passive_clipboard_text_into_local_prompt():
+def test_supervisor_does_not_inject_passive_clipboard_text_into_local_prompt(monkeypatch):
+    _mock_loaded_lmstudio_model(
+        monkeypatch,
+        model_id="nvidia/nemotron-3-nano-4b",
+        context_length=8192,
+    )
     agent = SupervisorAgent(provider="lmstudio", model="nvidia/nemotron-3-nano-4b", temperature=0.0)
 
     spec = agent._build_prompt_spec(
@@ -237,6 +288,12 @@ def test_supervisor_includes_memory_context_when_present():
 
 
 def test_supervisor_surfaces_lmstudio_runtime_errors(monkeypatch):
+    _mock_loaded_lmstudio_model(
+        monkeypatch,
+        model_id="missing-model",
+        context_length=8192,
+    )
+
     def raise_runtime_error(_input):
         raise RuntimeError("The selected LM Studio model 'missing-model' is not available. Choose a downloaded local model in Settings and try again.")
 
@@ -261,6 +318,11 @@ def test_supervisor_surfaces_lmstudio_runtime_errors(monkeypatch):
 
 
 def test_supervisor_streams_preview_updates_from_lmstudio_when_supported(monkeypatch):
+    _mock_loaded_lmstudio_model(
+        monkeypatch,
+        model_id="nvidia/nemotron-3-nano-4b",
+        context_length=8192,
+    )
     preview_updates: list[str] = []
 
     class FakeNativeClient:

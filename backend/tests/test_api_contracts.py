@@ -108,8 +108,8 @@ def test_config_ignores_removed_runtime_hotkey_fields(isolated_steervox_home):
     response = client.get("/config")
     assert response.status_code == 200
     payload = response.json()
-    assert payload["llm"]["routing"]["provider"] == "lmstudio"
-    assert payload["llm"]["routing"]["model"] == "local-model"
+    assert payload["llm"]["routing"]["provider"] == "groq"
+    assert payload["llm"]["routing"]["model"] == "llama3-70b-8192"
     assert payload["hotkeys"] == {
         "default_skill_id": "system_dictation",
         "app_skill_defaults": [],
@@ -213,6 +213,31 @@ def test_config_serializes_app_skill_defaults():
             "enabled": True,
         }
     ]
+
+
+def test_config_update_mirrors_router_model_to_selected_smart_model():
+    server = load_server()
+    client = TestClient(server.app)
+
+    update_response = client.post("/config", json={
+        "llm": {
+            "provider": "groq",
+            "model": "moonshotai/kimi-k2-instruct-0905",
+            "routing": {
+                "enabled": True,
+                "provider": "groq",
+                "model": "groq/compound-mini",
+                "temperature": 0.0,
+            },
+        }
+    })
+
+    assert update_response.status_code == 200
+    payload = update_response.json()["config"]["llm"]
+    assert payload["provider"] == "groq"
+    assert payload["model"] == "moonshotai/kimi-k2-instruct-0905"
+    assert payload["routing"]["provider"] == "groq"
+    assert payload["routing"]["model"] == "moonshotai/kimi-k2-instruct-0905"
 
 
 def test_config_serializes_domain_defaults():
@@ -365,6 +390,12 @@ def test_status_and_skills_expose_new_contract_and_telemetry_fields():
     assert payload["pending_paste"] is None
     assert "pending_notification" in payload
     assert payload["pending_notification"] is None
+    assert "pending_review" in payload
+    assert payload["pending_review"] is None
+    assert "active_task_run" in payload
+    assert payload["active_task_run"] is None
+    assert "task_result_summary" in payload
+    assert payload["task_result_summary"] is None
     assert payload["recording_cues_enabled"] is False
     assert payload["restore_clipboard_after_paste"] is True
     assert "active_domain" in payload
@@ -454,6 +485,22 @@ def test_status_exposes_pending_action_review_state():
 
     assert status_response.status_code == 200
     assert status_response.json()["pending_action_review"] == server.engine.pending_action_review
+    assert status_response.json()["pending_review"] == {
+        "id": "desktop-action:review-1",
+        "run_id": "review-1",
+        "scope": "desktop_action",
+        "kind": "desktop_action",
+        "title": "Open URL",
+        "summary": "Open https://example.com in the default browser.",
+        "detail": None,
+        "command": None,
+        "cwd": None,
+        "risk_level": "medium",
+        "status": "pending",
+        "error": None,
+        "language": "applescript",
+        "script": 'open location "https://example.com"',
+    }
 
 
 def test_status_exposes_live_transcription_state():
@@ -614,6 +661,152 @@ def test_review_action_endpoints_delegate_to_engine():
     assert response.status_code == 200
     assert response.json() == {"status": "rejected", "run_id": "review-1"}
     reject.assert_called_once_with("review-1")
+
+
+def test_local_task_endpoints_delegate_to_engine():
+    server = load_server()
+    client = TestClient(server.app)
+
+    with patch.object(server.engine, "create_local_task_run", return_value={
+        "run_id": "task-1",
+        "title": "Local task",
+        "status": "pending_review",
+    }) as create_run:
+        response = client.post("/tasks/local", json={
+            "request_text": "run git status",
+            "command": "git status",
+            "cwd": "/tmp/workspace",
+            "title": "Local task",
+        })
+    assert response.status_code == 200
+    assert response.json()["status"] == "pending_review"
+    create_run.assert_called_once_with(
+        request_text="run git status",
+        command="git status",
+        cwd="/tmp/workspace",
+        title="Local task",
+    )
+
+    with patch.object(server.engine, "approve_local_task_review", return_value={
+        "status": "approved",
+        "run_id": "task-1",
+        "review_id": "review-1",
+    }) as approve:
+        response = client.post("/tasks/local/review/approve", json={
+            "run_id": "task-1",
+            "review_id": "review-1",
+        })
+    assert response.status_code == 200
+    approve.assert_called_once_with(run_id="task-1", review_id="review-1")
+
+    with patch.object(server.engine, "reject_local_task_review", return_value={
+        "status": "rejected",
+        "run_id": "task-1",
+        "review_id": "review-1",
+    }) as reject:
+        response = client.post("/tasks/local/review/reject", json={
+            "run_id": "task-1",
+            "review_id": "review-1",
+        })
+    assert response.status_code == 200
+    reject.assert_called_once_with(run_id="task-1", review_id="review-1")
+
+    with patch.object(server.engine, "cancel_local_task_run", return_value={
+        "status": "cancel_requested",
+        "run_id": "task-1",
+    }) as cancel:
+        response = client.post("/tasks/local/cancel", json={"run_id": "task-1"})
+    assert response.status_code == 200
+    cancel.assert_called_once_with(run_id="task-1")
+
+
+def test_local_task_endpoints_delegate_multi_step_payloads_to_engine():
+    server = load_server()
+    client = TestClient(server.app)
+
+    with patch.object(server.engine, "create_local_task_run", return_value={
+        "run_id": "task-2",
+        "title": "Computer Use",
+        "status": "pending_review",
+    }) as create_run:
+        response = client.post("/tasks/local", json={
+            "request_text": "open Finder and search the repo for LocalTaskShellService",
+            "title": "Computer Use",
+            "run_kind": "multi_step",
+            "plan_summary": "Execute 2 reviewed steps.",
+            "steps": [
+                {
+                    "id": "step-1",
+                    "kind": "desktop_action",
+                    "title": "Open Finder",
+                    "summary": "Open Finder.",
+                    "status": "pending",
+                    "command": None,
+                    "cwd": None,
+                    "language": "applescript",
+                    "script": 'tell application id "com.apple.finder"\nreopen\nactivate\nend tell',
+                    "review_required": True,
+                    "execution_mode": "reviewed",
+                    "action_type": "open_app",
+                    "app_name": None,
+                    "bundle_id": None,
+                    "value_percent": None,
+                    "target_label": None,
+                    "target_role": None,
+                    "ui_index": None,
+                    "started_at": None,
+                    "completed_at": None,
+                    "exit_code": None,
+                    "error": None,
+                },
+                {
+                    "id": "step-2",
+                    "kind": "shell_command",
+                    "title": "Search repo",
+                    "summary": "Run rg -n -- LocalTaskShellService .",
+                    "status": "pending",
+                    "command": "rg -n -- LocalTaskShellService .",
+                    "cwd": "/tmp/workspace",
+                    "language": "shell",
+                    "script": "rg -n -- LocalTaskShellService .",
+                    "review_required": True,
+                    "execution_mode": None,
+                    "action_type": None,
+                    "app_name": None,
+                    "bundle_id": None,
+                    "value_percent": None,
+                    "target_label": None,
+                    "target_role": None,
+                    "ui_index": None,
+                    "started_at": None,
+                    "completed_at": None,
+                    "exit_code": None,
+                    "error": None,
+                },
+            ],
+        })
+    assert response.status_code == 200
+    create_run.assert_called_once()
+    assert create_run.call_args.kwargs["run_kind"] == "multi_step"
+    assert create_run.call_args.kwargs["plan_summary"] == "Execute 2 reviewed steps."
+    assert len(create_run.call_args.kwargs["steps"]) == 2
+
+    with patch.object(server.engine, "approve_local_task_review", return_value={
+        "status": "approved",
+        "run_id": "task-2",
+        "review_id": "review-2",
+    }) as approve:
+        response = client.post("/tasks/local/review/approve", json={
+            "run_id": "task-2",
+            "review_id": "review-2",
+            "retry_mode": "retry_failed_step",
+        })
+    assert response.status_code == 200
+    approve.assert_called_once_with(
+        run_id="task-2",
+        review_id="review-2",
+        retry_mode="retry_failed_step",
+    )
 
 
 def test_runtime_events_stream_initial_snapshot():

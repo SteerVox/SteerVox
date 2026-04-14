@@ -31,8 +31,12 @@ const EVENT_TYPES: RuntimeEventType[] = [
   'notification',
   'smart_preview',
   'pending_action_review',
+  'pending_review',
+  'active_task_run',
+  'task_result_summary',
   'live_transcription',
   'history_invalidated',
+  'task_runs_invalidated',
   'inbox_invalidated',
   'skills_invalidated',
   'domains_invalidated',
@@ -61,6 +65,7 @@ const INITIAL_REVISIONS: RuntimeRevisionMap = {
   config: 0,
   providers: 0,
   history: 0,
+  tasks: 0,
   inbox: 0,
   skills: 0,
   domains: 0,
@@ -72,6 +77,7 @@ const INITIAL_INVALIDATION_TOKENS: Record<RuntimeInvalidateScope, number> = {
   config: 0,
   providers: 0,
   history: 0,
+  tasks: 0,
   inbox: 0,
   skills: 0,
   domains: 0,
@@ -125,6 +131,7 @@ function cloneInvalidationTokens(tokens: Record<RuntimeInvalidateScope, number>)
     config: tokens.config,
     providers: tokens.providers,
     history: tokens.history,
+    tasks: tokens.tasks,
     inbox: tokens.inbox,
     skills: tokens.skills,
     domains: tokens.domains,
@@ -151,7 +158,12 @@ function hasImpossibleDeliveryState(status: BackendStatus | null) {
     return false
   }
 
-  return !status.is_processing && !status.pending_paste && !status.pending_notification && !status.pending_action_review
+  return !status.is_processing
+    && !status.pending_paste
+    && !status.pending_notification
+    && !status.pending_action_review
+    && !status.pending_review
+    && !status.active_task_run
 }
 
 export class RuntimeStore {
@@ -517,7 +529,50 @@ export class RuntimeStore {
         }
         return
       case 'pending_paste':
+        this.setState((current) => ({
+          ...current,
+          snapshot: {
+            ...current.snapshot,
+            status: current.snapshot.status
+              ? {
+                  ...current.snapshot.status,
+                  pending_paste: (envelope.data as {
+                    pending_paste?: BackendStatus['pending_paste']
+                    pending_paste_text?: BackendStatus['pending_paste_text']
+                  })?.pending_paste ?? null,
+                  pending_paste_text: (envelope.data as {
+                    pending_paste?: BackendStatus['pending_paste']
+                    pending_paste_text?: BackendStatus['pending_paste_text']
+                  })?.pending_paste_text ?? null,
+                  phase: (envelope.data as {
+                    pending_paste?: BackendStatus['pending_paste']
+                  })?.pending_paste
+                    ? 'preparing_paste'
+                    : current.snapshot.status.phase,
+                  phase_label: (envelope.data as {
+                    pending_paste?: BackendStatus['pending_paste']
+                  })?.pending_paste
+                    ? 'Preparing paste'
+                    : current.snapshot.status.phase_label,
+                }
+              : current.snapshot.status,
+          },
+        }))
+        void this.refreshStatus(envelope.seq)
+        return
       case 'notification':
+        this.setState((current) => ({
+          ...current,
+          snapshot: {
+            ...current.snapshot,
+            status: current.snapshot.status
+              ? {
+                  ...current.snapshot.status,
+                  pending_notification: envelope.data as BackendStatus['pending_notification'],
+                }
+              : current.snapshot.status,
+          },
+        }))
         return
       case 'smart_preview':
         this.setState((current) => ({
@@ -542,6 +597,48 @@ export class RuntimeStore {
               ? {
                   ...current.snapshot.status,
                   pending_action_review: envelope.data as BackendStatus['pending_action_review'],
+                }
+              : current.snapshot.status,
+          },
+        }))
+        return
+      case 'pending_review':
+        this.setState((current) => ({
+          ...current,
+          snapshot: {
+            ...current.snapshot,
+            status: current.snapshot.status
+              ? {
+                  ...current.snapshot.status,
+                  pending_review: envelope.data as BackendStatus['pending_review'],
+                }
+              : current.snapshot.status,
+          },
+        }))
+        return
+      case 'active_task_run':
+        this.setState((current) => ({
+          ...current,
+          snapshot: {
+            ...current.snapshot,
+            status: current.snapshot.status
+              ? {
+                  ...current.snapshot.status,
+                  active_task_run: envelope.data as BackendStatus['active_task_run'],
+                }
+              : current.snapshot.status,
+          },
+        }))
+        return
+      case 'task_result_summary':
+        this.setState((current) => ({
+          ...current,
+          snapshot: {
+            ...current.snapshot,
+            status: current.snapshot.status
+              ? {
+                  ...current.snapshot.status,
+                  task_result_summary: envelope.data as BackendStatus['task_result_summary'],
                 }
               : current.snapshot.status,
           },
@@ -599,6 +696,9 @@ export class RuntimeStore {
       }
       case 'history_invalidated':
         this.applyInvalidation('history', Number((envelope.data as { revision?: number })?.revision || 0))
+        return
+      case 'task_runs_invalidated':
+        this.applyInvalidation('tasks', Number((envelope.data as { revision?: number })?.revision || 0))
         return
       case 'inbox_invalidated':
         this.applyInvalidation('inbox', Number((envelope.data as { revision?: number })?.revision || 0))

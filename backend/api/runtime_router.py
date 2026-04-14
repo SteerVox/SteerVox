@@ -6,7 +6,13 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 
-from api.schemas import ActionReviewDecisionPayload, PasteAckPayload
+from api.schemas import (
+    ActionReviewDecisionPayload,
+    LocalTaskCancelPayload,
+    LocalTaskCreatePayload,
+    LocalTaskReviewDecisionPayload,
+    PasteAckPayload,
+)
 from api.state import BackendAppState
 from runtime_events import build_heartbeat_event, encode_sse_event
 from utils.logger import get_logger
@@ -106,5 +112,65 @@ def build_runtime_router(state: BackendAppState) -> APIRouter:
                 detail="The reviewed action no longer matches the current backend state.",
             )
         return {"status": "rejected", "run_id": payload.run_id}
+
+    @router.post("/tasks/local")
+    def create_local_task(payload: LocalTaskCreatePayload):
+        create_kwargs = {
+            "request_text": payload.request_text,
+            "command": payload.command,
+            "cwd": payload.cwd,
+            "title": payload.title,
+        }
+        if payload.run_kind != "single_step":
+            create_kwargs["run_kind"] = payload.run_kind
+        if payload.plan_summary is not None:
+            create_kwargs["plan_summary"] = payload.plan_summary
+        if payload.steps:
+            create_kwargs["steps"] = payload.steps
+        try:
+            return state.engine.create_local_task_run(**create_kwargs)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.post("/tasks/local/review/approve")
+    def approve_local_task_review(payload: LocalTaskReviewDecisionPayload):
+        approve_kwargs = {
+            "run_id": payload.run_id,
+            "review_id": payload.review_id,
+        }
+        if payload.retry_mode is not None:
+            approve_kwargs["retry_mode"] = payload.retry_mode
+        try:
+            return state.engine.approve_local_task_review(**approve_kwargs)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.post("/tasks/local/review/reject")
+    def reject_local_task_review(payload: LocalTaskReviewDecisionPayload):
+        try:
+            return state.engine.reject_local_task_review(
+                run_id=payload.run_id,
+                review_id=payload.review_id,
+            )
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.post("/tasks/local/cancel")
+    def cancel_local_task(payload: LocalTaskCancelPayload):
+        try:
+            return state.engine.cancel_local_task_run(run_id=payload.run_id)
+        except RuntimeError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+    @router.get("/tasks/local")
+    def list_local_tasks(limit: int = 20):
+        return {"runs": state.engine.list_local_task_runs(limit=limit)}
+
+    @router.get("/tasks/local/{run_id}")
+    def get_local_task(run_id: str):
+        run = state.engine.get_local_task_run(run_id)
+        if run is None:
+            raise HTTPException(status_code=404, detail="The requested local task run could not be found.")
+        return run
 
     return router

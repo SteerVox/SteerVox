@@ -16,6 +16,7 @@ from automation.applescript import escape_applescript_string, run_applescript_li
 from automation.reviewed_actions import execute_reviewed_applescript, validate_reviewed_applescript
 from app_catalog import AppCatalog, InstalledAppRecord, normalize_app_match_text
 from config.manager import ConfigManager
+from local_task_shell.models import LocalTaskStep
 from providers.llm_factory import LLMFactory
 from system_control import SystemControlError, SystemControlService
 from ui_automation import BUTTON_ROLES, TEXT_FIELD_ROLES, UIAutomationService, UIElementCandidate, classify_ui_automation_error
@@ -23,11 +24,19 @@ from utils.logger import get_logger
 
 
 logger = get_logger()
-ReviewedActionType = Literal["open_app", "open_url", "mail_draft"]
+ReviewedActionType = Literal[
+    "open_app",
+    "open_url",
+    "mail_draft",
+    "youtube_open_first_result",
+    "youtube_ensure_playing",
+]
 ActionType = Literal[
     "open_app",
     "open_url",
     "mail_draft",
+    "youtube_open_first_result",
+    "youtube_ensure_playing",
     "focus_field",
     "press_button",
     "focus_browser_address_bar",
@@ -111,6 +120,12 @@ TRAILING_CONTEXT_QUALIFIER_PATTERN = re.compile(
     r"\s+(?:of|on|in)\s+(?:chatgpt|chat gpt|claude|gemini|google chrome|chrome|safari|arc|brave(?: browser)?|microsoft edge|edge|browser)\b.*$",
     re.IGNORECASE,
 )
+LEADING_APP_FILLER_PATTERN = re.compile(r"^(?:the|my)\s+", re.IGNORECASE)
+TRAILING_APP_NOUN_PATTERN = re.compile(r"\s+(?:app|application)\b$", re.IGNORECASE)
+TRAILING_APP_CLAUSE_PATTERN = re.compile(
+    r"\s+(?:and|then)\s+(?:go|open|show|find|search|navigate|switch|focus|bring|launch|move|scroll|click|press|select|type)\b.*$",
+    re.IGNORECASE,
+)
 DOT_WORD_PATTERN = re.compile(r"\s+dot\s+", re.IGNORECASE)
 SLASH_WORD_PATTERN = re.compile(r"\s+slash\s+", re.IGNORECASE)
 COLON_WORD_PATTERN = re.compile(r"\s+colon\s+", re.IGNORECASE)
@@ -124,6 +139,11 @@ SUPPORTED_BROWSER_APPS = {
     "Microsoft Edge",
 }
 CHROMIUM_BROWSER_APPS = SUPPORTED_BROWSER_APPS - {"Safari"}
+SUPPORTED_YOUTUBE_BROWSER_APPS = {
+    "Google Chrome",
+    "Brave Browser",
+    "Microsoft Edge",
+}
 SUPPORTED_MEDIA_APPS = {
     "Music",
     "Spotify",
@@ -265,6 +285,8 @@ class ActionPlan(BaseModel):
     target_label: Optional[str] = None
     target_role: Optional[str] = None
     ui_index: Optional[int] = None
+    site: Optional[str] = None
+    query: Optional[str] = None
 
 
 class PendingActionReview(BaseModel):
@@ -392,11 +414,31 @@ class ReviewedActionBuilder:
         skill: SkillDefinition,
     ) -> ActionBuildResult:
         plan = self._build_local_plan(transcript, context)
-        if plan is None:
+        if plan is None and self.provider.lower() != "lmstudio":
             plan = self._build_llm_plan(transcript, context, skill)
         if plan is None:
             raise RuntimeError("Smart Mode could not convert that request into a safe desktop action.")
 
+        return self._build_result_from_plan(plan)
+
+    def build_planned_step(
+        self,
+        *,
+        planned_step: Any,
+        context: dict[str, Any],
+        skill: SkillDefinition,
+    ) -> ActionBuildResult:
+        plan = self._build_structured_plan(planned_step, context=context)
+        if plan is None:
+            plan = self._build_local_plan(str(getattr(planned_step, "request", "") or "").strip(), context)
+        if plan is None and self.provider.lower() != "lmstudio":
+            plan = self._build_llm_plan(str(getattr(planned_step, "request", "") or "").strip(), context, skill)
+        if plan is None:
+            raise RuntimeError("Smart Mode could not convert that request into a safe desktop action.")
+
+        return self._build_result_from_plan(plan)
+
+    def _build_result_from_plan(self, plan: ActionPlan) -> ActionBuildResult:
         if plan.action_type in AUTO_ACTION_TYPES:
             return ActionBuildResult(
                 auto_action=AutoActionPayload(
@@ -421,6 +463,77 @@ class ReviewedActionBuilder:
                 script=render_applescript(plan),
             )
         )
+
+    def _build_structured_plan(self, planned_step: Any, *, context: dict[str, Any]) -> Optional[ActionPlan]:
+        action_type = str(getattr(planned_step, "action_type", "") or "").strip()
+        if not action_type:
+            return None
+
+        title = str(getattr(planned_step, "title", "") or "").strip()
+        summary = str(getattr(planned_step, "summary", "") or "").strip()
+        app_name = str(getattr(planned_step, "app_name", "") or "").strip() or None
+        browser_app_name = str(getattr(planned_step, "browser_app_name", "") or "").strip() or None
+        url = str(getattr(planned_step, "url", "") or "").strip() or None
+        site = str(getattr(planned_step, "site", "") or "").strip() or None
+        query = str(getattr(planned_step, "query", "") or "").strip() or None
+
+        if action_type == "open_app":
+            if not app_name:
+                raise ActionResolutionError("The planned app-open step did not include a target app.")
+            return self._resolve_app_action(title or f"open {app_name}", app_name)
+
+        if action_type == "open_url":
+            if not url:
+                raise ActionResolutionError("The planned browser navigation step did not include a URL.")
+            target_browser = browser_app_name or app_name
+            if target_browser:
+                if target_browser not in SUPPORTED_BROWSER_APPS:
+                    raise ActionResolutionError(
+                        f"{target_browser} is not supported for reviewed browser navigation. Use Safari, Chrome, Arc, Brave, or Edge."
+                    )
+                label = target_browser
+                return ActionPlan(
+                    action_type="open_url",
+                    title=title or "Open URL",
+                    summary=summary or f"Open {url} in {label}.",
+                    url=url,
+                    browser_app_name=label,
+                    url_target="current_tab",
+                    app_name=label,
+                )
+            return ActionPlan(
+                action_type="open_url",
+                title=title or "Open URL",
+                summary=summary or f"Open {url} in the default browser.",
+                url=url,
+                url_target="system_open",
+            )
+
+        if action_type in {"youtube_open_first_result", "youtube_ensure_playing"}:
+            target_browser = browser_app_name or app_name
+            if not target_browser:
+                raise ActionResolutionError("The planned YouTube browser step did not include a target browser.")
+            if target_browser not in SUPPORTED_YOUTUBE_BROWSER_APPS:
+                raise ActionResolutionError(
+                    f"YouTube playback automation currently supports Google Chrome, Brave Browser, and Microsoft Edge. {target_browser} is not supported yet."
+                )
+            if site and site.lower() != "youtube":
+                raise ActionResolutionError("The planned browser-media step was not scoped to YouTube.")
+            return ActionPlan(
+                action_type=action_type,  # type: ignore[arg-type]
+                title=title or ("Open First Result" if action_type == "youtube_open_first_result" else "Ensure Playback"),
+                summary=summary or (
+                    "Open the first YouTube search result."
+                    if action_type == "youtube_open_first_result"
+                    else "Start playback on the current YouTube video only if it is paused."
+                ),
+                app_name=target_browser,
+                browser_app_name=target_browser,
+                site="youtube",
+                query=query,
+            )
+
+        return None
 
     def _build_local_plan(self, transcript: str, context: dict[str, Any]) -> Optional[ActionPlan]:
         normalized = " ".join((transcript or "").split()).strip()
@@ -666,7 +779,7 @@ class ReviewedActionBuilder:
 
         app_match = OPEN_APP_PATTERN.search(normalized)
         if app_match:
-            app_query = app_match.group(1).strip().rstrip(".,")
+            app_query = _clean_app_query(app_match.group(1))
             if len(app_query.split()) <= 8:
                 return self._resolve_app_action(normalized, app_query)
 
@@ -947,7 +1060,7 @@ class ReviewedActionBuilder:
         close_candidates = [candidate for score, candidate in scored[:5] if (top_score - score) <= 0.08 and score >= 0.6]
         if len(close_candidates) <= 1 and top_score >= 0.62:
             return top_candidate, "fuzzy", suggestions
-        if len(close_candidates) >= 2:
+        if len(close_candidates) >= 2 and self.provider.lower() != "lmstudio":
             llm_choice = self._choose_candidate_with_llm(
                 query=query,
                 candidate_kind=candidate_kind,
@@ -1038,6 +1151,8 @@ class ReviewedActionBuilder:
         candidate_kind: str,
         candidates: list[_MatchCandidate],
     ) -> Optional[_MatchCandidate]:
+        if self.provider.lower() == "lmstudio":
+            return None
         try:
             from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate, SystemMessagePromptTemplate
 
@@ -1249,6 +1364,8 @@ Candidates:
         return "open"
 
     def _build_llm_plan(self, transcript: str, context: dict[str, Any], skill: SkillDefinition) -> Optional[ActionPlan]:
+        if self.provider.lower() == "lmstudio":
+            return None
         from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate, SystemMessagePromptTemplate
 
         llm = LLMFactory.get_llm(
@@ -1358,6 +1475,51 @@ def render_applescript(plan: ActionPlan) -> str:
                 ])
         return f'open location "{url}"'
 
+    if plan.action_type == "youtube_open_first_result":
+        browser_name = escape_applescript_string(plan.browser_app_name or plan.app_name or "")
+        javascript = escape_applescript_string(
+            "(() => {"
+            " if (!location.hostname.includes('youtube.com')) { throw new Error('Not on YouTube.'); }"
+            " const firstResult = document.querySelector('ytd-video-renderer a#video-title, ytd-rich-item-renderer a#video-title');"
+            " if (!firstResult) { throw new Error('No YouTube search result available.'); }"
+            " firstResult.click();"
+            " return 'opened-first-result';"
+            "})();"
+        )
+        return "\n".join([
+            f'tell application "{browser_name}"',
+            'activate',
+            f'if (count of windows) = 0 then error "{browser_name} does not have an open browser window."',
+            f'execute front window\'s active tab javascript "{javascript}"',
+            'end tell',
+        ])
+
+    if plan.action_type == "youtube_ensure_playing":
+        browser_name = escape_applescript_string(plan.browser_app_name or plan.app_name or "")
+        javascript = escape_applescript_string(
+            "(() => {"
+            " if (!location.hostname.includes('youtube.com')) { throw new Error('Not on YouTube.'); }"
+            " const video = document.querySelector('video');"
+            " if (!video) { throw new Error('No YouTube video is open.'); }"
+            " if (!video.paused) { return 'already-playing'; }"
+            " const playButton = document.querySelector('.ytp-play-button');"
+            " const ariaLabel = (playButton?.getAttribute('aria-label') || '').toLowerCase();"
+            " if (playButton && (!ariaLabel || ariaLabel.includes('play'))) {"
+            "   playButton.click();"
+            "   return 'started-playing';"
+            " }"
+            " video.play();"
+            " return 'started-playing';"
+            "})();"
+        )
+        return "\n".join([
+            f'tell application "{browser_name}"',
+            'activate',
+            f'if (count of windows) = 0 then error "{browser_name} does not have an open browser window."',
+            f'execute front window\'s active tab javascript "{javascript}"',
+            'end tell',
+        ])
+
     recipient_line = ""
     if plan.recipient:
         recipient = escape_applescript_string(plan.recipient)
@@ -1454,6 +1616,74 @@ def execute_auto_action(action: AutoActionPayload) -> None:
         return
 
     raise RuntimeError(f"Unsupported auto action '{action.action_type}'.")
+
+
+def validate_planned_desktop_step(step: LocalTaskStep) -> Optional[str]:
+    if step.kind != "desktop_action":
+        return "The planned step is not a desktop action."
+
+    if step.execution_mode == "reviewed":
+        if not step.action_type or not step.script:
+            return "The reviewed desktop step is missing action metadata."
+        review = PendingActionReview(
+            run_id=f"planned-step:{step.id}",
+            action_type=step.action_type,  # type: ignore[arg-type]
+            title=step.title,
+            summary=step.summary,
+            script=step.script,
+            language="applescript",
+        )
+        return validate_reviewed_action(review)
+
+    if step.execution_mode == "auto":
+        try:
+            _build_auto_action_from_step(step)
+        except RuntimeError as exc:
+            return str(exc).strip() or "The planned auto desktop step is invalid."
+        return None
+
+    return "The desktop step is missing an execution mode."
+
+
+def execute_planned_desktop_step(step: LocalTaskStep) -> None:
+    validation_error = validate_planned_desktop_step(step)
+    if validation_error:
+        raise RuntimeError(validation_error)
+
+    if step.execution_mode == "reviewed":
+        review = PendingActionReview(
+            run_id=f"planned-step:{step.id}",
+            action_type=step.action_type,  # type: ignore[arg-type]
+            title=step.title,
+            summary=step.summary,
+            script=step.script or "",
+            language="applescript",
+        )
+        execute_reviewed_action(review)
+        return
+
+    execute_auto_action(_build_auto_action_from_step(step))
+
+
+def _build_auto_action_from_step(step: LocalTaskStep) -> AutoActionPayload:
+    if step.kind != "desktop_action":
+        raise RuntimeError("Only desktop-action steps can be executed as auto actions.")
+    if not step.action_type:
+        raise RuntimeError("The desktop step is missing an action type.")
+    if not step.app_name:
+        raise RuntimeError("The auto desktop step is missing its target app name.")
+    return AutoActionPayload(
+        action_type=step.action_type,  # type: ignore[arg-type]
+        title=step.title,
+        summary=step.summary,
+        app_name=step.app_name,
+        bundle_id=step.bundle_id,
+        value_percent=step.value_percent,
+        target_label=step.target_label,
+        target_role=step.target_role,
+        ui_index=step.ui_index,
+    )
+
 
 def _execute_volume_step(delta: int) -> None:
     run_applescript_lines([
@@ -1627,6 +1857,19 @@ def _clean_target_phrase(value: str) -> str:
         if next_cleaned == cleaned:
             break
         cleaned = next_cleaned
+    cleaned = MULTISPACE_PATTERN.sub(" ", cleaned)
+    return cleaned.strip(" .,:;")
+
+
+def _clean_app_query(value: str) -> str:
+    cleaned = str(value or "").strip().strip(".,")
+    cleaned = TRAILING_APP_CLAUSE_PATTERN.sub("", cleaned).strip()
+    while True:
+        next_cleaned = LEADING_APP_FILLER_PATTERN.sub("", cleaned).strip()
+        if next_cleaned == cleaned:
+            break
+        cleaned = next_cleaned
+    cleaned = TRAILING_APP_NOUN_PATTERN.sub("", cleaned).strip()
     cleaned = MULTISPACE_PATTERN.sub(" ", cleaned)
     return cleaned.strip(" .,:;")
 

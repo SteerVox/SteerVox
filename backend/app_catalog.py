@@ -45,6 +45,7 @@ class AppCatalog:
         default_roots = (
             Path("/Applications"),
             Path("/System/Applications"),
+            Path("/System/Library/CoreServices"),
             Path("/Applications/Utilities"),
             Path.home() / "Applications",
         )

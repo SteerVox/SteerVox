@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from typing import Any, Dict, Literal, Optional
 
 from agent.skills.manager import SkillManager
+from agent.computer_use_planner import detect_computer_use_trigger
 from config.models import AppSkillDefault, HotkeyConfig
 from context_profile import derive_surface_kind, derive_target_type, normalize_context
 from utils.logger import get_logger
@@ -570,6 +571,15 @@ def resolve_active_skill_selection(
         default_skill_id = "system_dictation"
 
     if not domain_id:
+        computer_use_trigger = (
+            detect_computer_use_trigger(
+                transcript=transcript,
+                requested_skill_id=requested.skill_id,
+                effective_skill_id=requested.skill_id,
+            )
+            if requested.source == "global_default" and requested.skill_id == "system_dictation"
+            else None
+        )
         auto_selection = (
             _resolve_auto_skill_selection(
                 transcript=transcript,
@@ -578,7 +588,7 @@ def resolve_active_skill_selection(
                 smart_router_agent=smart_router_agent,
                 allow_model_routing=allow_model_routing,
             )
-            if requested.source == "global_default" and requested.skill_id == "system_dictation"
+            if requested.source == "global_default" and requested.skill_id == "system_dictation" and computer_use_trigger is None
             else None
         )
         final_skill_id = str(auto_selection.get("skill_id") or requested.skill_id) if auto_selection else requested.skill_id

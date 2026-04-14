@@ -313,12 +313,18 @@ export function HomeView() {
 
   const completePackagedOnboarding = async () => {
     const nextContext = await window.windowControls?.completePackagedOnboarding?.()
-    if (nextContext) setLaunchContext(nextContext)
+    if (nextContext) {
+      setLaunchContext(nextContext)
+      setActionError(nextContext.onboarding_blocker)
+    }
   }
 
   const dismissPackagedOnboarding = async () => {
     const nextContext = await window.windowControls?.dismissPackagedOnboarding?.()
-    if (nextContext) setLaunchContext(nextContext)
+    if (nextContext) {
+      setLaunchContext(nextContext)
+      setActionError(null)
+    }
   }
 
   const readinessState = useMemo(() => selectReadinessState(runtime), [runtime])
@@ -330,8 +336,10 @@ export function HomeView() {
     [historyItems, notes],
   )
 
-  const showChecklist = Boolean(onboardingState && !onboardingState.completed)
-  const showRewriteFollowUp = Boolean(onboardingState?.completed && !onboardingState.rewriteProviderReady)
+  const packagedInstallReady = !launchContext?.is_packaged || launchContext.install_location === 'applications'
+  const packagedOnboardingReady = Boolean(onboardingState?.completed && packagedInstallReady)
+  const showChecklist = Boolean(onboardingState && (!onboardingState.completed || !packagedInstallReady))
+  const showRewriteFollowUp = Boolean(packagedOnboardingReady && !onboardingState?.rewriteProviderReady)
   const isDictationRecording = captureState.is_recording && captureState.mode === 'dictation'
   const isRewriteRecording = captureState.is_recording && captureState.mode === 'smart_transform'
   const environmentPending = localEnvironment.status === 'checking' || localEnvironment.status === 'verifying'
@@ -402,6 +410,20 @@ export function HomeView() {
         {actionError || connectionError || environmentMessage ? (
           <div className="mt-6 rounded-2xl border border-semantic-warning/20 bg-semantic-warning/8 px-4 py-3 text-sm leading-6 text-text-secondary">
             {actionError || connectionError || environmentMessage}
+          </div>
+        ) : null}
+
+        {launchContext?.is_packaged ? (
+          <div className="mt-6 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Public beta</div>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">
+                  This Apple Silicon beta is distributed from the website as an unsigned build. Open it with the macOS beta workaround, move it into Applications, and reinstall manually when a new beta is published.
+                </p>
+              </div>
+              <StatusPill label={launchContext.install_location === 'applications' ? 'Applications' : 'Move app first'} tone={launchContext.install_location === 'applications' ? 'good' : 'warn'} />
+            </div>
           </div>
         ) : null}
 
@@ -477,6 +499,22 @@ export function HomeView() {
             </div>
 
             <div className="mt-5 grid gap-4">
+              {launchContext?.is_packaged ? (
+                <ChecklistRow
+                  title="Move the app to Applications"
+                  description="Website betas should be reopened from /Applications before you finish setup or trust the permissions state."
+                  completed={packagedInstallReady}
+                  action={!packagedInstallReady ? (
+                    <button
+                      type="button"
+                      onClick={() => navigate(buildSettingsRoute('voice'))}
+                      className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                    >
+                      Open install steps
+                    </button>
+                  ) : undefined}
+                />
+              ) : null}
               <ChecklistRow
                 title="Enable microphone"
                 description={`Grant microphone access so ${DISPLAY_NAME} can listen for speech.`}
@@ -507,7 +545,7 @@ export function HomeView() {
               />
               <ChecklistRow
                 title="Configure dictation"
-                description="Use one provider path for speech recognition first. Groq is the fastest one-key option."
+                description="Use one provider path for speech recognition first. Start with the bundled local path if it is already ready; otherwise Groq is the fastest one-key option."
                 completed={onboardingState.dictationProviderReady}
                 action={!onboardingState.dictationProviderReady ? (
                   <button
@@ -547,10 +585,10 @@ export function HomeView() {
                 <button
                   type="button"
                   onClick={() => void completePackagedOnboarding()}
-                  disabled={!onboardingState.completed}
+                  disabled={!packagedOnboardingReady}
                   className="rounded-2xl border border-accent-primary/20 bg-accent-primary px-4 py-2.5 text-sm font-medium text-[#021318] transition-colors hover:bg-[#46f0f4] disabled:cursor-not-allowed disabled:opacity-45"
                 >
-                  {onboardingState.completed ? 'Finish setup' : 'Finish after dictation works'}
+                  {packagedOnboardingReady ? 'Finish setup' : 'Finish after install and dictation'}
                 </button>
               </div>
             ) : null}

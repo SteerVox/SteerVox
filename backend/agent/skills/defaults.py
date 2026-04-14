@@ -31,6 +31,8 @@ class DefaultSkills:
         "EMAIL_DRAFT": "system_email_draft",
         "SOCIAL_POST": "system_social_post",
         "DOMAIN_EMAIL": "system_domain_email",
+        "LOCAL_TASK": "system_local_task",
+        "COMPUTER_USE": "system_computer_use",
         "TERMINAL_COMMAND": "system_terminal",
         "CODE_SNIPPET": "system_code",
         "ISSUE_TICKET": "system_issue_ticket",

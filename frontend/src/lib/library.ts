@@ -31,6 +31,19 @@ function normalizeHistoryOutputMode(item: HistoryItem) {
   return item.telemetry.output_mode || null
 }
 
+function isComputerUseHistory(item: HistoryItem | undefined) {
+  return item?.telemetry?.intent === 'computer_use'
+}
+
+function formatSourceModeLabel(item: LibraryItem) {
+  if (item.kind === 'history' && isComputerUseHistory(item.history)) {
+    return item.source_mode === 'local_task' ? 'Computer use task' : 'Computer use'
+  }
+  if (item.source_mode === 'smart_transform') return 'Smart'
+  if (item.source_mode === 'local_task') return 'Local task'
+  return 'Dictate'
+}
+
 export function createLibraryItems(notes: InboxNote[], historyItems: HistoryItem[]): LibraryItem[] {
   const noteItems: LibraryItem[] = notes.map((note) => ({
     kind: 'note',
@@ -100,21 +113,27 @@ export function matchesLibraryItem(item: LibraryItem, tokens: string[], filter: 
 }
 
 export function formatLibraryItemLabel(item: LibraryItem) {
-  const modeLabel = item.source_mode === 'smart_transform' ? 'Smart' : 'Dictate'
+  const modeLabel = formatSourceModeLabel(item)
 
   if (item.kind === 'note') {
     if (item.source_kind === 'selection_text') return `${modeLabel} • Selection note`
     if (item.source_kind === 'clipboard_text') return `${modeLabel} • Clipboard note`
     if (item.source_kind === 'transformed_output') return `${modeLabel} • Saved result`
+    if (item.source_kind === 'task_result') return `${modeLabel} • Task result`
     return `${modeLabel} • Spoken note`
   }
 
-  return `${modeLabel} run`
+  return item.source_mode === 'local_task' ? `${modeLabel}` : `${modeLabel} run`
 }
 
 export function formatLibraryDetailTitle(item: LibraryItem) {
   if (item.kind === 'note') return 'Saved note'
-  return item.source_mode === 'smart_transform' ? 'Smart run' : 'Dictation run'
+  if (item.kind === 'history' && isComputerUseHistory(item.history)) {
+    return item.source_mode === 'local_task' ? 'Computer use task' : 'Computer use run'
+  }
+  if (item.source_mode === 'smart_transform') return 'Smart run'
+  if (item.source_mode === 'local_task') return 'Local task'
+  return 'Dictation run'
 }
 
 export function isLibraryCodeItem(item: LibraryItem) {

@@ -91,6 +91,21 @@ describe('library helpers', () => {
     expect(isLibraryCodeItem(historyItem)).toBe(true)
   })
 
+  it('labels computer-use history separately from normal Smart runs', () => {
+    const historyItem = createLibraryItems(
+      [],
+      [buildHistoryItem({
+        telemetry: {
+          output_mode: 'plain_text',
+          intent: 'computer_use',
+        },
+      })],
+    )[0]
+
+    expect(formatLibraryItemLabel(historyItem)).toBe('Computer use run')
+    expect(formatLibraryDetailTitle(historyItem)).toBe('Computer use run')
+  })
+
   it('filters by tokens and section type', () => {
     const noteItem = createLibraryItems(
       [buildNote({ text: 'Call carrier about Bangalore delay.' })],

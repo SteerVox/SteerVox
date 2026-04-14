@@ -60,6 +60,44 @@ class VisionConfig(BaseModel):
     timeout_ms: int = Field(default=2500, ge=500, le=10000, description="Timeout for local vision context extraction.")
 
 
+class LocalTaskShellConfig(BaseModel):
+    enabled: bool = Field(
+        default=True,
+        description="Enable the SteerVox-native local task shell for reviewed, local-only command execution.",
+    )
+    safety_mode: Literal["strict"] = Field(
+        default="strict",
+        description="The local task shell currently runs only in strict local-only mode.",
+    )
+    allowed_directories: List[str] = Field(
+        default_factory=list,
+        description="Optional extra local directories that the reviewed task shell may use as working roots.",
+    )
+
+    @field_validator("allowed_directories", mode="before")
+    @classmethod
+    def normalize_allowed_directories(cls, value: object) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            items = [segment.strip() for segment in value.split("\n")]
+        elif isinstance(value, list):
+            items = [str(segment).strip() for segment in value]
+        else:
+            raise ValueError("allowed_directories must be a list or newline-delimited string.")
+
+        normalized: List[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if not item:
+                continue
+            if item in seen:
+                continue
+            seen.add(item)
+            normalized.append(item)
+        return normalized
+
+
 class ActionsConfig(BaseModel):
     enabled: bool = Field(
         default=True,
@@ -72,6 +110,10 @@ class ActionsConfig(BaseModel):
     experimental_media_controls: bool = Field(
         default=False,
         description="Enable beta system-wide media transport controls such as global play/pause and track navigation.",
+    )
+    local_task_shell: LocalTaskShellConfig = Field(
+        default_factory=LocalTaskShellConfig,
+        description="Settings for the SteerVox-native reviewed local task shell.",
     )
 
 class AppSkillDefault(BaseModel):

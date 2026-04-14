@@ -75,6 +75,8 @@ def test_rewrite_transcript_updates_smart_preview_runtime_state(monkeypatch):
         "text": "Please ship this once QA has approved it.",
         "final_text": "Please ship this once QA has approved it.",
         "error": None,
+        "smart_profile": "local_compact",
+        "smart_profile_label": "Local Smart profile",
         "updated_at": engine.smart_preview["updated_at"],
     }
     assert emitted_events.count("smart_preview") >= 2
@@ -312,6 +314,29 @@ def test_engine_uses_streaming_transcript_without_invoking_batch_stt(monkeypatch
 
     assert engine.pending_paste_text == "live transcript result"
     assert engine.pipeline_timings["stt_done"] is not None
+
+
+def test_engine_create_local_task_run_exposes_review_state(tmp_path):
+    engine = SteerVoxEngine()
+    engine.config_manager.update_config({
+        "actions": {
+            "local_task_shell": {
+                "allowed_directories": [str(tmp_path)],
+            }
+        }
+    })
+    created = engine.create_local_task_run(
+        request_text="run git status",
+        command="git status",
+        cwd=str(tmp_path),
+        title="Inspect repo",
+    )
+
+    assert created["status"] == "pending_review"
+    assert engine.active_task_run is not None
+    assert engine.pending_review is not None
+    assert engine.pending_review["scope"] == "local_task"
+    assert engine.pending_paste is None
 
 
 def test_reprocess_history_can_force_a_selected_skill(monkeypatch):

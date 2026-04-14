@@ -171,7 +171,7 @@ class WritingToolsSnapshot(BaseModel):
 
 class HistoryItem(BaseModel):
     id: int
-    mode: Literal["dictation", "smart_transform"]
+    mode: Literal["dictation", "smart_transform", "local_task"]
     transcript: str
     final_output: str
     created_at: str
@@ -459,7 +459,7 @@ class WritingToolsStore:
     def record_history(
         self,
         *,
-        mode: Literal["dictation", "smart_transform"],
+        mode: Literal["dictation", "smart_transform", "local_task"],
         transcript: str,
         final_output: str,
         telemetry: Dict[str, Any],

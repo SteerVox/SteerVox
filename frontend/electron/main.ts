@@ -285,14 +285,24 @@ type LocalAppState = {
     backgroundOnly: boolean
 }
 
+type UsageStatsSnapshot = {
+    dictation_runs?: number
+}
+
 type LaunchContext = {
     is_packaged: boolean
     backend_base_url: string
     app_version: string
+    release_channel: 'development' | 'public_beta'
+    trust_posture: 'development' | 'unsigned_beta'
+    manual_updates_only: boolean
+    supported_architecture: 'apple_silicon'
     install_location: 'applications' | 'disk_image' | 'other' | 'development'
     should_prompt_move_to_applications: boolean
     onboarding_completed: boolean
     onboarding_dismissed: boolean
+    dictation_tested: boolean
+    onboarding_blocker: string | null
     background_only: boolean
     log_paths: {
         backend: string
@@ -858,15 +868,67 @@ function getInstallLocation(): LaunchContext['install_location'] {
     return 'other'
 }
 
-function getLaunchContext(): LaunchContext {
+async function readPackagedOnboardingStatus(installLocation: LaunchContext['install_location']) {
+    let dictationTested = false
+
+    try {
+        const usage = await backendClient.getJson<UsageStatsSnapshot>('/usage', { timeoutMs: 1200 })
+        dictationTested = Number(usage?.dictation_runs || 0) > 0
+    } catch (error) {
+        logToFile(`Launch context could not read usage stats: ${error instanceof Error ? error.message : String(error)}`)
+    }
+
+    if (!app.isPackaged) {
+        return {
+            dictation_tested: dictationTested,
+            onboarding_blocker: null,
+        }
+    }
+
+    if (installLocation !== 'applications') {
+        return {
+            dictation_tested: dictationTested,
+            onboarding_blocker: installLocation === 'disk_image'
+                ? `Move ${DISPLAY_NAME} from the downloaded DMG into /Applications, then reopen it from there before finishing setup.`
+                : `Move ${DISPLAY_NAME} into /Applications before finishing setup so permissions and helper paths stay stable.`,
+        }
+    }
+
+    if (!dictationTested) {
+        return {
+            dictation_tested: false,
+            onboarding_blocker: 'Run one successful Dictate pass before finishing setup.',
+        }
+    }
+
+    return {
+        dictation_tested: true,
+        onboarding_blocker: null,
+    }
+}
+
+async function getLaunchContext(): Promise<LaunchContext> {
+    const installLocation = getInstallLocation()
+    const packagedOnboarding = await readPackagedOnboardingStatus(installLocation)
+    const packagedRequirementsMet = !app.isPackaged || (
+        installLocation === 'applications'
+        && packagedOnboarding.dictation_tested
+    )
+
     return {
         is_packaged: app.isPackaged,
         backend_base_url: backendLifecycle.getBaseUrl(),
         app_version: app.getVersion(),
-        install_location: getInstallLocation(),
-        should_prompt_move_to_applications: app.isPackaged && getInstallLocation() !== 'applications',
-        onboarding_completed: appState.onboardingCompleted,
+        release_channel: app.isPackaged ? 'public_beta' : 'development',
+        trust_posture: app.isPackaged ? 'unsigned_beta' : 'development',
+        manual_updates_only: app.isPackaged,
+        supported_architecture: 'apple_silicon',
+        install_location: installLocation,
+        should_prompt_move_to_applications: app.isPackaged && installLocation !== 'applications',
+        onboarding_completed: appState.onboardingCompleted && packagedRequirementsMet,
         onboarding_dismissed: appState.onboardingDismissed,
+        dictation_tested: packagedOnboarding.dictation_tested,
+        onboarding_blocker: packagedOnboarding.onboarding_blocker,
         background_only: appState.backgroundOnly,
         log_paths: {
             backend: resolveAppHomePath('logs', BACKEND_LOG_FILE_NAME),
@@ -3985,11 +4047,11 @@ ipcMain.handle('report-renderer-error', (_event, payload: { message: string; sta
     return { status: 'logged' }
 })
 
-ipcMain.handle('get-launch-context', () => {
+ipcMain.handle('get-launch-context', async () => {
     return getLaunchContext()
 })
 
-ipcMain.handle('set-background-only', (_event, enabled: boolean) => {
+ipcMain.handle('set-background-only', async (_event, enabled: boolean) => {
     if (isPackagedTrayOnlyMac()) {
         return getLaunchContext()
     }
@@ -4088,12 +4150,17 @@ ipcMain.handle('restart-backend', async () => {
     return { status: 'restarted' }
 })
 
-ipcMain.handle('dismiss-packaged-onboarding', () => {
+ipcMain.handle('dismiss-packaged-onboarding', async () => {
     updateAppState({ onboardingDismissed: true })
     return getLaunchContext()
 })
 
-ipcMain.handle('complete-packaged-onboarding', () => {
+ipcMain.handle('complete-packaged-onboarding', async () => {
+    const launchContext = await getLaunchContext()
+    if (launchContext.onboarding_blocker) {
+        return launchContext
+    }
+
     updateAppState({
         onboardingCompleted: true,
         onboardingDismissed: true,

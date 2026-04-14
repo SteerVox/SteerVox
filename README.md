@@ -17,6 +17,8 @@ It is designed to stay light and local-first:
 
 - Dictate directly into any app with a keyboard shortcut
 - Use Smart Mode to rewrite what you said before it is pasted
+- Use `Computer Use` for SteerVox-executed local desktop actions and reviewed repo/file tasks
+- Run reviewed local tasks through the SteerVox-native Local Task Shell without leaving the app
 - Work from selected text or clipboard text when you say things like `summarize this`
 - Save spoken ideas or rewritten output into Notes instead of pasting them
 - Use built-in templates for email, team chat, code help, tickets, summaries, social posts, and more
@@ -26,6 +28,12 @@ It is designed to stay light and local-first:
 - Edit Shipping and Medical domain packs locally in Settings
 - Review text-only history and reprocess past runs without storing audio
 - Tighten privacy with sensitive-target rules and clipboard restore
+
+## Additional Documentation
+
+- [SteerVox Computer Use Guide](Docs/steervox-computer-use-guide.md)
+- [SteerVox Computer Use Validation Report](Docs/steervox-computer-use-validation-report.md)
+- [SteerVox Native Local Task Shell](Docs/steervox-local-task-shell.md)
 
 ## Screen Gallery
 
@@ -147,6 +155,20 @@ Groq is the default cloud setup for Smart Mode and for the optional Smart router
 
 ## Local Setup
 
+### Quick Bootstrap
+
+If you want the full dev environment plus the focused verification flow for the current local Smart refactor, run:
+
+```bash
+./scripts/setup-dev.sh
+```
+
+That script will:
+
+- create `backend/.venv` if it does not exist
+- install backend dev dependencies from `backend/requirements-dev.txt`
+- install frontend dependencies with `npm ci`
+
 ### 1. Clone the repo
 
 ```bash
@@ -193,6 +215,13 @@ brew install ffmpeg
 `ffmpeg` must be available on your `PATH` for MLX Whisper to work.
 
 ## Run The App In Development
+
+If you already ran `./scripts/setup-dev.sh`, you can start dev immediately with:
+
+```bash
+cd frontend
+npm run dev
+```
 
 Start the app from the `frontend` folder:
 
@@ -578,6 +607,17 @@ The backend does not capture microphone audio directly.
 
 ## Tests
 
+Full local verification:
+
+```bash
+./scripts/verify-dev.sh
+```
+
+That runs:
+
+- the full backend `pytest` suite
+- frontend lint, TypeScript build, and the full Vitest suite
+
 Backend tests:
 
 ```bash
@@ -597,6 +637,42 @@ npm run lint
 ```
 
 Manual smoke checks live under `backend/manual_checks/`.
+
+## Public Beta Release
+
+Website beta target:
+
+- Apple Silicon Macs only
+- unsigned public beta DMG
+- manual updates only
+
+Release-candidate verification:
+
+```bash
+./scripts/verify-release.sh public-beta
+```
+
+Public beta packaging:
+
+```bash
+cd frontend
+npm run build:mac:public-beta
+```
+
+That flow produces:
+
+- a DMG
+- a `.sha256` checksum file
+- a small JSON manifest for website publishing
+
+Signed packaging is kept as a separate path:
+
+```bash
+cd frontend
+npm run build:mac:signed
+```
+
+Installer/operator notes live in [Docs/public-beta-install-and-release.md](/Users/abhishekrai/Desktop/SteerVox/Docs/public-beta-install-and-release.md).
 
 ## License
 

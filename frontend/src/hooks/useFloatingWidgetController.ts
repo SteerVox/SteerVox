@@ -15,6 +15,7 @@ import type {
   DomainMode,
   LiveTranscription,
   PendingActionReview,
+  PendingReviewItem,
   RecordingMode,
   Skill,
   WidgetPresentationSource,
@@ -75,6 +76,8 @@ const WIDGET_VISIBLE_SYSTEM_SKILL_IDS: ReadonlySet<string> = new Set([
   'system_chat_reply',
   'system_email_draft',
   'system_social_post',
+  'system_computer_use',
+  'system_local_task',
   'system_terminal',
   'system_code',
   'system_issue_ticket',
@@ -107,6 +110,8 @@ const DEFAULT_WIDGET_TEMPLATE_OPTIONS: Skill[] = [
   createFallbackWidgetSkill('system_chat_reply', 'Team Chat Reply'),
   createFallbackWidgetSkill('system_email_draft', 'Email Draft'),
   createFallbackWidgetSkill('system_social_post', 'Social / Professional Post'),
+  createFallbackWidgetSkill('system_computer_use', 'Computer Use'),
+  createFallbackWidgetSkill('system_local_task', 'Local Task Shell'),
   createFallbackWidgetSkill('system_terminal', 'Terminal Command'),
   createFallbackWidgetSkill('system_code', 'Code Snippet'),
   createFallbackWidgetSkill('system_issue_ticket', 'Issue / Ticket'),
@@ -132,6 +137,7 @@ export function useFloatingWidgetController() {
   const runtime = useRuntimeStore((state) => state)
   const backendStatus = runtime.snapshot.status
   const runtimeConfig = runtime.snapshot.config
+  const hasRuntimeConfig = Boolean(runtimeConfig)
   const localEnvironment = runtime.localEnvironment
   const readinessState = useMemo(() => selectReadinessState(runtime), [runtime])
   const onboardingState = useMemo(() => selectOnboardingState(runtime), [runtime])
@@ -198,9 +204,9 @@ export function useFloatingWidgetController() {
   }, [captureState.is_recording, clearSuccessTimer])
 
   useEffect(() => {
-    if (!runtime.snapshot.config) return
+    if (!hasRuntimeConfig) return
     void loadTemplateOptions()
-  }, [loadTemplateOptions, runtime.connectionState, runtime.invalidationTokens.skills, Boolean(runtime.snapshot.config)])
+  }, [hasRuntimeConfig, loadTemplateOptions, runtime.connectionState, runtime.invalidationTokens.skills])
 
   const engageWidget = useCallback(() => {
     clearAutoRetractTimer()
@@ -332,6 +338,7 @@ export function useFloatingWidgetController() {
     if (
       backendStatus.phase === 'transcribing'
       || backendStatus.phase === 'transforming'
+      || Boolean(backendStatus.active_task_run)
       || preparingPasteBusy
     ) {
       setWidgetState('processing')
@@ -351,7 +358,28 @@ export function useFloatingWidgetController() {
   }, [backendStatus, preparingPasteBusy, readinessState, runtime.connectionState])
 
   const pendingActionReview = backendStatus?.pending_action_review ?? null
-  const showActionReview = Boolean(pendingActionReview)
+  const pendingReview = backendStatus?.pending_review ?? (
+    pendingActionReview
+      ? {
+          id: `desktop-action:${pendingActionReview.run_id}`,
+          run_id: pendingActionReview.run_id,
+          scope: 'desktop_action',
+          kind: 'desktop_action',
+          title: pendingActionReview.title,
+          summary: pendingActionReview.summary,
+          detail: null,
+          command: null,
+          cwd: null,
+          risk_level: 'medium',
+          status: pendingActionReview.status,
+          error: pendingActionReview.error,
+          language: pendingActionReview.language,
+          script: pendingActionReview.script,
+        } satisfies PendingReviewItem
+      : null
+  )
+  const activeTaskRun = backendStatus?.active_task_run ?? null
+  const showActionReview = Boolean(pendingReview)
   const smartPreview = backendStatus?.smart_preview
   const liveTranscription = localLiveTranscription ?? backendStatus?.live_transcription ?? null
   const showSmartPreview = Boolean(
@@ -499,10 +527,10 @@ export function useFloatingWidgetController() {
   }, [backendStatus, backendStatus?.pending_notification?.body, backendStatus?.pending_notification?.title, queueSuccess])
 
   useEffect(() => {
-    if (!pendingActionReview) {
+    if (!pendingReview) {
       setActionReviewBusy(null)
     }
-  }, [pendingActionReview])
+  }, [pendingReview])
 
   const clearErroredActionReview = useCallback(async (review: PendingActionReview) => {
     try {
@@ -651,19 +679,35 @@ export function useFloatingWidgetController() {
 
   const submitActionReviewDecision = async (
     decision: 'approve' | 'reject',
-    review: PendingActionReview,
+    review: PendingReviewItem,
+    retryMode?: 'retry_failed_step' | 'rerun_all',
   ) => {
     engageWidget()
     setActionReviewBusy(decision)
     try {
-      await apiPost(`/actions/review/${decision}`, {
-        run_id: review.run_id,
-      })
+      if (review.scope === 'desktop_action') {
+        await apiPost(`/actions/review/${decision}`, {
+          run_id: review.run_id,
+        })
+      } else {
+        const payload: Record<string, string> = {
+          run_id: review.run_id,
+          review_id: review.id,
+        }
+        if (decision === 'approve' && retryMode) {
+          payload.retry_mode = retryMode
+        }
+        await apiPost(`/tasks/local/review/${decision}`, payload)
+      }
       setLastError(null)
     } catch (error) {
       const fallback = decision === 'approve'
-        ? 'Unable to run that desktop action right now.'
-        : 'Unable to dismiss that desktop action right now.'
+        ? review.scope === 'desktop_action'
+          ? 'Unable to run that desktop action right now.'
+          : 'Unable to start that local task right now.'
+        : review.scope === 'desktop_action'
+          ? 'Unable to dismiss that desktop action right now.'
+          : 'Unable to dismiss that local task right now.'
       setLastError(getErrorMessage(error, fallback))
     } finally {
       setActionReviewBusy(null)
@@ -703,6 +747,8 @@ export function useFloatingWidgetController() {
     autoRetractTimerRef,
     preparingPasteBusy,
     pendingActionReview,
+    pendingReview,
+    activeTaskRun,
     smartPreview,
     liveTranscription,
     showActionReview,

@@ -137,7 +137,9 @@ LMSTUDIO_SMART_NAME_PATTERNS = (
     "gpt-oss",
     "deepseek",
 )
+LMSTUDIO_PARAMETER_COUNT_PATTERN = re.compile(r"(?<!\d)(\d+(?:\.\d+)?)b\b", re.IGNORECASE)
 LMSTUDIO_SMALL_MODEL_PATTERN = re.compile(r"(?<!\d)(0?\.\d+|[1-4])b\b", re.IGNORECASE)
+LMSTUDIO_SMALL_MODEL_MIN_CONTEXT_LENGTH = 8192
 
 # Cache: { (provider, discriminator): { "models": [...], "timestamp": float } }
 _cache: Dict[Tuple[str, str], dict] = {}
@@ -284,10 +286,30 @@ class ModelDiscovery:
         return NON_ALNUM_PATTERN.sub("", str(value or "").strip().lower())
 
     @staticmethod
+    def _extract_lmstudio_parameter_count_billions(value: Any) -> Optional[float]:
+        if isinstance(value, dict):
+            searchable = ModelDiscovery._lmstudio_model_searchable_text(value)
+        else:
+            searchable = str(value or "").strip().lower()
+
+        match = LMSTUDIO_PARAMETER_COUNT_PATTERN.search(searchable)
+        if not match:
+            return None
+
+        try:
+            parsed = float(match.group(1))
+        except (TypeError, ValueError):
+            return None
+        return parsed if parsed > 0 else None
+
+    @staticmethod
+    def lmstudio_is_4b_or_smaller_model(value: Any) -> bool:
+        parameter_count = ModelDiscovery._extract_lmstudio_parameter_count_billions(value)
+        return parameter_count is not None and parameter_count <= 4.0
+
+    @staticmethod
     def _looks_like_small_lmstudio_model(model: dict) -> bool:
-        params_string = str(model.get("paramsString") or "").strip().lower()
-        searchable = ModelDiscovery._lmstudio_model_searchable_text(model)
-        return bool(LMSTUDIO_SMALL_MODEL_PATTERN.search(params_string or searchable))
+        return ModelDiscovery.lmstudio_is_4b_or_smaller_model(model)
 
     @staticmethod
     def _looks_like_smart_lmstudio_model(model: dict) -> bool:
@@ -304,6 +326,27 @@ class ModelDiscovery:
         except (TypeError, ValueError):
             return None
         return parsed if parsed > 0 else None
+
+    @staticmethod
+    def lmstudio_resolve_request_context_length(
+        model: Any,
+        requested_context_length: Optional[int],
+    ) -> Optional[int]:
+        effective_context_length: Optional[int]
+        try:
+            effective_context_length = int(requested_context_length) if requested_context_length is not None else None
+        except (TypeError, ValueError):
+            effective_context_length = None
+
+        if effective_context_length is not None and effective_context_length <= 0:
+            effective_context_length = None
+
+        if not ModelDiscovery.lmstudio_is_4b_or_smaller_model(model):
+            return effective_context_length
+
+        if effective_context_length is None:
+            return LMSTUDIO_SMALL_MODEL_MIN_CONTEXT_LENGTH
+        return max(effective_context_length, LMSTUDIO_SMALL_MODEL_MIN_CONTEXT_LENGTH)
 
     @staticmethod
     def _lmstudio_smart_capabilities(model: dict) -> dict[str, Any]:

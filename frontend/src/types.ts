@@ -1,4 +1,5 @@
 export type RecordingMode = 'dictation' | 'smart_transform'
+export type HistoryMode = RecordingMode | 'local_task'
 export type WidgetPresentationSource = 'tray' | 'hotkey' | 'idle'
 export type PrivacyPane = 'microphone' | 'accessibility' | 'automation'
 export type MicrophonePermissionStatus = 'granted' | 'denied' | 'not-determined' | 'restricted' | 'unknown'
@@ -50,12 +51,103 @@ export interface PendingPaste {
 
 export interface PendingActionReview {
   run_id: string
-  action_type: 'open_app' | 'open_url' | 'mail_draft'
+  action_type: 'open_app' | 'open_url' | 'mail_draft' | 'youtube_open_first_result' | 'youtube_ensure_playing'
   title: string
   summary: string
   script: string
   language: 'applescript'
   status: 'pending' | 'approved' | 'rejected' | 'error'
+  error: string | null
+}
+
+export interface PendingReviewItem {
+  id: string
+  run_id: string
+  scope: 'local_task' | 'desktop_action'
+  kind: 'shell_command' | 'desktop_action' | 'file_edit' | 'task_plan' | 'task_retry'
+  title: string
+  summary: string
+  detail: string | null
+  command: string | null
+  cwd: string | null
+  risk_level: 'low' | 'medium' | 'high'
+  status: 'pending' | 'approved' | 'rejected' | 'error'
+  error: string | null
+  language: 'shell' | 'applescript' | null
+  script: string | null
+  step_id?: string | null
+}
+
+export interface LocalTaskOutputBlock {
+  id: string
+  stream: 'stdout' | 'stderr' | 'summary'
+  text: string
+  truncated: boolean
+  updated_at: string
+}
+
+export interface LocalTaskStep {
+  id: string
+  kind: 'command' | 'shell_command' | 'desktop_action' | 'review' | 'result'
+  title: string
+  summary: string
+  status: 'pending' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked'
+  command: string | null
+  cwd: string | null
+  language?: 'shell' | 'applescript' | null
+  script?: string | null
+  review_required?: boolean
+  execution_mode?: 'auto' | 'reviewed' | null
+  action_type?: string | null
+  app_name?: string | null
+  bundle_id?: string | null
+  value_percent?: number | null
+  target_label?: string | null
+  target_role?: string | null
+  ui_index?: number | null
+  started_at: string | null
+  completed_at: string | null
+  exit_code: number | null
+  error: string | null
+}
+
+export interface LocalTaskResultSummary {
+  run_id: string
+  title: string
+  summary: string
+  status: 'pending_review' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked'
+  command: string | null
+  cwd: string | null
+  plan_summary?: string | null
+  exit_code: number | null
+  output_excerpt: string | null
+  step_count?: number
+  completed_steps?: number
+  failed_step_id?: string | null
+  failed_step_title?: string | null
+  created_at: string
+  completed_at: string
+  saved_to_history?: boolean
+  saved_to_inbox?: boolean
+}
+
+export interface LocalTaskRun {
+  run_id: string
+  request_text: string
+  source_intent?: 'local_task' | 'computer_use'
+  run_kind?: 'single_step' | 'multi_step'
+  title: string
+  plan_summary?: string | null
+  status: 'pending_review' | 'running' | 'completed' | 'failed' | 'cancelled' | 'blocked'
+  command: string | null
+  cwd: string
+  created_at: string
+  updated_at: string
+  current_step_id: string | null
+  review_required: boolean
+  steps: LocalTaskStep[]
+  output_blocks: LocalTaskOutputBlock[]
+  result_summary: LocalTaskResultSummary | null
   error: string | null
 }
 
@@ -68,6 +160,8 @@ export interface SmartPreview {
   text: string
   final_text: string | null
   error: string | null
+  smart_profile?: 'default' | 'local_compact' | null
+  smart_profile_label?: string | null
   updated_at: string
 }
 
@@ -161,10 +255,16 @@ export interface AppLaunchContext {
   is_packaged: boolean
   backend_base_url: string
   app_version: string
+  release_channel: 'development' | 'public_beta'
+  trust_posture: 'development' | 'unsigned_beta'
+  manual_updates_only: boolean
+  supported_architecture: 'apple_silicon'
   install_location: 'applications' | 'disk_image' | 'other' | 'development'
   should_prompt_move_to_applications: boolean
   onboarding_completed: boolean
   onboarding_dismissed: boolean
+  dictation_tested: boolean
+  onboarding_blocker: string | null
   background_only: boolean
   log_paths: {
     backend: string
@@ -413,7 +513,7 @@ export interface WritingToolsSnapshot {
 
 export interface HistoryItem {
   id: number
-  mode: RecordingMode
+  mode: HistoryMode
   transcript: string
   final_output: string
   created_at: string
@@ -449,7 +549,7 @@ export interface LearnedMemory {
 
 export interface SmartRunTelemetry {
   intent: string
-  lane: 'passthrough' | 'deterministic' | 'llm'
+  lane: 'passthrough' | 'deterministic' | 'llm' | 'refused'
   confidence: number
   ambiguity: number
   reason: string
@@ -470,6 +570,8 @@ export interface SmartRunTelemetry {
   command_operations_applied: string[]
   format_contract: string | null
   surface_contract_applied: boolean
+  smart_profile: 'default' | 'local_compact'
+  profile_limit_reason: string | null
   provider: string | null
   model: string | null
   domain_id: 'shipping' | 'medical' | null
@@ -493,6 +595,9 @@ export interface SmartRunTelemetry {
   llm_timeout_triggered: boolean
   llm_fallback_applied: boolean
   llm_fallback_reason: string | null
+  structured_output_mode: 'none' | 'json_schema'
+  structured_output_schema: string | null
+  structured_output_failure_kind: 'none' | 'grammar_truncation_error' | 'schema_validation_error' | 'transport_error'
   skill_router_resolver: 'none' | 'local' | 'model'
   skill_router_model_attempted: boolean
   skill_router_model_error: string | null
@@ -501,13 +606,15 @@ export interface SmartRunTelemetry {
   auto_selected_skill_id: string | null
   auto_selected_skill_name: string | null
   auto_selected_skill_reason: string | null
-  planner_resolver: 'local' | 'groq'
+  planner_resolver: 'local' | 'model'
   planner_model_attempted: boolean
   planner_model_error: string | null
   planner_provider: string | null
   planner_model: string | null
   action_route: 'pass_through' | 'save_note' | 'transform_then_paste' | 'transform_then_save_note'
   action_resolver: 'none' | 'local' | 'groq'
+  computer_use_trigger?: 'explicit_mode' | 'action_phrase' | null
+  computer_use_plan_kind?: 'desktop_action' | 'local_task' | 'multi_step' | 'refusal' | null
   action_review_required?: boolean
   action_execution_mode?: 'none' | 'reviewed' | 'auto'
   external_context_source: 'selection' | 'clipboard' | 'none'
@@ -533,8 +640,8 @@ export interface InboxNote {
   app_name: string
   bundle_id: string | null
   window_title: string | null
-  source_mode: RecordingMode
-  source_kind: 'spoken_text' | 'selection_text' | 'clipboard_text' | 'transformed_output'
+  source_mode: HistoryMode
+  source_kind: 'spoken_text' | 'selection_text' | 'clipboard_text' | 'transformed_output' | 'task_result'
   output_mode: SkillOutputMode | null
 }
 
@@ -571,7 +678,7 @@ export type LibraryItem =
     app_name: string
     window_title: string | null
     output_mode: SkillOutputMode | null
-    source_mode: RecordingMode
+    source_mode: HistoryMode
     source_kind: InboxNote['source_kind']
     preview: string
     search_text: string
@@ -584,7 +691,7 @@ export type LibraryItem =
     app_name: string
     window_title: string | null
     output_mode: SkillOutputMode | null
-    source_mode: RecordingMode
+    source_mode: HistoryMode
     preview: string
     search_text: string
     history: HistoryItem
@@ -661,6 +768,11 @@ export interface AppConfig {
     enabled: boolean
     auto_approve_reviewed: boolean
     experimental_media_controls: boolean
+    local_task_shell?: {
+      enabled: boolean
+      safety_mode: 'strict'
+      allowed_directories: string[]
+    }
   }
   hotkeys: {
     default_skill_id: string
@@ -718,6 +830,9 @@ export interface BackendStatus {
   last_smart_run: SmartRunTelemetry | null
   smart_preview?: SmartPreview | null
   pending_action_review?: PendingActionReview | null
+  pending_review?: PendingReviewItem | null
+  active_task_run?: LocalTaskRun | null
+  task_result_summary?: LocalTaskResultSummary | null
   live_transcription?: LiveTranscription | null
   local_stt?: LocalSttRuntimeStatus | null
   pipeline_timings: RuntimePipelineTimings
@@ -762,6 +877,7 @@ export type RuntimeInvalidateScope =
   | 'config'
   | 'providers'
   | 'history'
+  | 'tasks'
   | 'inbox'
   | 'skills'
   | 'domains'
@@ -778,8 +894,12 @@ export type RuntimeEventType =
   | 'notification'
   | 'smart_preview'
   | 'pending_action_review'
+  | 'pending_review'
+  | 'active_task_run'
+  | 'task_result_summary'
   | 'live_transcription'
   | 'history_invalidated'
+  | 'task_runs_invalidated'
   | 'inbox_invalidated'
   | 'skills_invalidated'
   | 'domains_invalidated'
