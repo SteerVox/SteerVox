@@ -191,6 +191,28 @@ def test_reviewed_action_builder_strips_follow_up_clause_from_open_app_request()
     assert result.pending_review.summary == "Open Finder."
 
 
+def test_reviewed_action_builder_handles_polite_open_app_request():
+    builder = ReviewedActionBuilder(
+        provider="lmstudio",
+        model="demo",
+        temperature=0.0,
+        app_catalog=FakeAppCatalog([
+            _app_record("Google Chrome", "com.google.Chrome", "/Applications/Google Chrome.app"),
+        ]),
+    )
+
+    result = builder.build(
+        transcript="could you please open Chrome for me?",
+        context={},
+        skill=DefaultSkills.ACTION_EXECUTION,
+    )
+
+    assert result.pending_review is not None
+    assert result.pending_review.action_type == "open_app"
+    assert result.pending_review.summary == "Open Google Chrome."
+    assert 'tell application id "com.google.Chrome"' in result.pending_review.script
+
+
 def test_reviewed_action_builder_uses_llm_tiebreak_for_ambiguous_app_matches(monkeypatch):
     builder = ReviewedActionBuilder(
         provider="groq",

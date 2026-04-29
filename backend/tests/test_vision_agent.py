@@ -97,11 +97,7 @@ def test_vision_agent_falls_back_to_configured_vision_model_when_text_model_lack
     monkeypatch.setattr("vision_agent.requests.post", fake_post)
     monkeypatch.setattr(
         "vision_agent.ModelDiscovery.lmstudio_supports_vision",
-        lambda _model_id, require_loaded=False: False,
-    )
-    monkeypatch.setattr(
-        "vision_agent.ModelDiscovery.resolve_lmstudio_vision_model",
-        lambda preferred=None, require_loaded=False, exclude_model_ids=None: preferred or "granite-vision",
+        lambda model_id, require_loaded=False: model_id == "granite-vision",
     )
 
     config = AppConfig.model_validate({
@@ -317,11 +313,7 @@ def test_vision_agent_truncates_long_transcript_in_prompt(monkeypatch):
 def test_vision_agent_fails_open_when_local_vision_times_out(monkeypatch):
     monkeypatch.setattr(
         "vision_agent.ModelDiscovery.lmstudio_supports_vision",
-        lambda _model_id, require_loaded=False: False,
-    )
-    monkeypatch.setattr(
-        "vision_agent.ModelDiscovery.resolve_lmstudio_vision_model",
-        lambda preferred=None, require_loaded=False, exclude_model_ids=None: preferred or "granite-vision",
+        lambda model_id, require_loaded=False: model_id == "granite-vision",
     )
     monkeypatch.setattr("vision_agent.requests.post", lambda *_args, **_kwargs: (_ for _ in ()).throw(requests.exceptions.Timeout("slow")))
 
@@ -353,10 +345,6 @@ def test_vision_agent_logs_when_no_model_is_available(monkeypatch):
         "vision_agent.ModelDiscovery.lmstudio_supports_vision",
         lambda _model_id, require_loaded=False: False,
     )
-    monkeypatch.setattr(
-        "vision_agent.ModelDiscovery.resolve_lmstudio_vision_model",
-        lambda preferred=None, require_loaded=False, exclude_model_ids=None: None,
-    )
     monkeypatch.setattr("vision_agent.logger.info", lambda message, *args: log_messages.append(message % args if args else message))
 
     config = AppConfig.model_validate({
@@ -387,43 +375,17 @@ def test_vision_agent_logs_when_no_model_is_available(monkeypatch):
     assert "Local vision skipped because no vision-capable LM Studio model is available." in log_messages
 
 
-def test_vision_agent_retries_with_loaded_fallback_when_selected_model_cannot_load(monkeypatch):
-    captured_models = []
+def test_vision_agent_does_not_auto_fallback_to_other_lmstudio_models(monkeypatch):
     log_messages = []
-
-    class UnloadedResponse:
-        status_code = 400
-        text = '{ "error": { "message": "Failed to load model \\"broken-vision\\". Error: Failed to load model.", "type": "invalid_request", "param": "model" } }'
-
-        @staticmethod
-        def json():
-            return {}
-
-    class LoadedResponse:
-        status_code = 200
-        text = ""
-
-        @staticmethod
-        def json():
-            return {"output_text": "Visible dashboard with shipment exceptions."}
-
-    def fake_post(_url, json=None, headers=None, timeout=None):
-        captured_models.append(json["model"])
-        if json["model"] == "broken-vision":
-            return UnloadedResponse()
-        return LoadedResponse()
-
-    monkeypatch.setattr("vision_agent.requests.post", fake_post)
+    request_count = {"value": 0}
+    monkeypatch.setattr("vision_agent.requests.post", lambda *_args, **_kwargs: request_count.__setitem__("value", request_count["value"] + 1))
     monkeypatch.setattr(
         "vision_agent.ModelDiscovery.lmstudio_supports_vision",
         lambda model_id, require_loaded=False: (
             model_id == "broken-vision" and not require_loaded
         ) or model_id == "loaded-vision"
     )
-    monkeypatch.setattr(
-        "vision_agent.ModelDiscovery.resolve_lmstudio_vision_model",
-        lambda preferred=None, require_loaded=False, exclude_model_ids=None: "loaded-vision",
-    )
+    monkeypatch.setattr("vision_agent.ensure_lmstudio_model_loaded", lambda *args, **kwargs: False)
     monkeypatch.setattr("vision_agent.logger.info", lambda message, *args: log_messages.append(message % args if args else message))
 
     config = AppConfig.model_validate({
@@ -450,9 +412,10 @@ def test_vision_agent_retries_with_loaded_fallback_when_selected_model_cannot_lo
         config=config,
     )
 
-    assert summary == "Visible dashboard with shipment exceptions."
-    assert captured_models == ["loaded-vision"]
-    assert any("Configured vision model broken-vision is listed in LM Studio but not currently loaded." in entry for entry in log_messages)
+    assert summary == ""
+    assert request_count["value"] == 0
+    assert any("Configured vision model broken-vision is listed in LM Studio but could not be auto-loaded." in entry for entry in log_messages)
+    assert any("Vision will stay pinned to the selected/configured model set." in entry for entry in log_messages)
 
 
 def test_vision_agent_classifies_failed_to_load_model_as_unavailable(monkeypatch):
@@ -470,10 +433,6 @@ def test_vision_agent_classifies_failed_to_load_model_as_unavailable(monkeypatch
     monkeypatch.setattr(
         "vision_agent.ModelDiscovery.lmstudio_supports_vision",
         lambda model_id, require_loaded=False: model_id == "broken-vision",
-    )
-    monkeypatch.setattr(
-        "vision_agent.ModelDiscovery.resolve_lmstudio_vision_model",
-        lambda preferred=None, require_loaded=False, exclude_model_ids=None: None,
     )
     monkeypatch.setattr("vision_agent.logger.info", lambda message, *args: log_messages.append(message % args if args else message))
 
@@ -503,3 +462,55 @@ def test_vision_agent_classifies_failed_to_load_model_as_unavailable(monkeypatch
 
     assert summary == ""
     assert any("Classification=vision_model_unavailable" in entry for entry in log_messages)
+
+
+def test_vision_agent_auto_loads_selected_model_before_request(monkeypatch):
+    captured = {}
+
+    class Response:
+        status_code = 200
+        text = ""
+
+        @staticmethod
+        def json():
+            return {"output_text": "Inbox with customer escalations and open tabs."}
+
+    def fake_post(_url, json=None, headers=None, timeout=None):
+        captured["payload"] = json
+        captured["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr("vision_agent.requests.post", fake_post)
+    monkeypatch.setattr(
+        "vision_agent.ModelDiscovery.lmstudio_supports_vision",
+        lambda model_id, require_loaded=False: model_id == "google/gemma-4-e4b",
+    )
+    monkeypatch.setattr("vision_agent.ensure_lmstudio_model_loaded", lambda *args, **kwargs: True)
+
+    config = AppConfig.model_validate({
+        "llm": {
+            "provider": "openai",
+            "model": "gpt-4o",
+            "temperature": 0.0,
+        },
+        "vision": {
+            "enabled": True,
+            "model": "google/gemma-4-e4b",
+            "timeout_ms": 2000,
+        },
+    })
+
+    summary = VisionAgent().summarize_screen(
+        transcript="What is on this screen?",
+        screen_capture={
+            "mime_type": "image/jpeg",
+            "image_base64": "abc123",
+            "width": 1280,
+            "height": 720,
+        },
+        config=config,
+    )
+
+    assert summary == "Inbox with customer escalations and open tabs."
+    assert captured["payload"]["model"] == "google/gemma-4-e4b"
+    assert captured["timeout"] == 2.0

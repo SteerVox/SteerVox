@@ -1,4 +1,4 @@
-import type { BackendRequestContext } from '../../shared/localBackendAuth'
+import type { BackendProxyRequest, BackendProxyResponse } from '../ipc/contracts'
 
 export type ApiRequestConfig = {
   headers?: HeadersInit
@@ -29,28 +29,28 @@ export function isApiHttpError(error: unknown): error is ApiHttpError {
   return error instanceof ApiHttpError
 }
 
-let requestContextPromise: Promise<BackendRequestContext> | null = null
+let backendBaseUrlPromise: Promise<string> | null = null
 
-async function resolveRequestContext() {
-  if (!requestContextPromise) {
-    if (!window.windowControls?.getBackendRequestContext) {
-      requestContextPromise = Promise.reject(new Error('The local backend bridge is unavailable.'))
+async function resolveBackendBaseUrl() {
+  if (!backendBaseUrlPromise) {
+    if (!window.windowControls?.getBackendBaseUrl) {
+      backendBaseUrlPromise = Promise.reject(new Error('The local backend bridge is unavailable.'))
     } else {
-      requestContextPromise = window.windowControls.getBackendRequestContext().then((value) => {
-        if (!value?.baseUrl) {
+      backendBaseUrlPromise = window.windowControls.getBackendBaseUrl().then((value) => {
+        if (!value) {
           throw new Error('The local backend URL is not ready yet.')
         }
         return value
       })
     }
 
-    requestContextPromise = requestContextPromise.catch((error) => {
-      requestContextPromise = null
+    backendBaseUrlPromise = backendBaseUrlPromise.catch((error) => {
+      backendBaseUrlPromise = null
       throw error
     })
   }
 
-  return requestContextPromise
+  return backendBaseUrlPromise
 }
 
 function readMessageFromPayload(payload: unknown, fallback: string) {
@@ -100,58 +100,66 @@ function createRequestSignal(parentSignal?: AbortSignal, timeoutMs?: number) {
   }
 }
 
-async function parseResponsePayload(response: Response) {
-  const contentType = response.headers.get('content-type') || ''
-  if (contentType.includes('application/json')) {
-    try {
-      return await response.json()
-    } catch {
-      return null
-    }
+function headersToRecord(headers: Headers) {
+  const result: Record<string, string> = {}
+  headers.forEach((value, name) => {
+    result[name] = value
+  })
+  return result
+}
+
+function waitForAbort<T>(promise: Promise<T>, signal?: AbortSignal) {
+  if (!signal) return promise
+  if (signal.aborted) {
+    return Promise.reject(new DOMException('The operation was aborted.', 'AbortError'))
   }
 
-  const text = await response.text()
-  return text.length ? text : null
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = () => reject(new DOMException('The operation was aborted.', 'AbortError'))
+    signal.addEventListener('abort', onAbort, { once: true })
+    promise.then(resolve, reject).finally(() => {
+      signal.removeEventListener('abort', onAbort)
+    })
+  })
+}
+
+async function sendBackendRequest<T>(request: BackendProxyRequest, signal?: AbortSignal): Promise<BackendProxyResponse<T>> {
+  if (!window.windowControls?.backendRequest) {
+    throw new Error('The local backend bridge is unavailable.')
+  }
+  return waitForAbort(window.windowControls.backendRequest<T>(request), signal)
 }
 
 async function request<T>(method: 'get' | 'post' | 'put' | 'delete', path: string, config?: ApiRequestConfig, data?: unknown): Promise<ApiResponse<T>> {
   const send = async () => {
-    const requestContext = await resolveRequestContext()
-    const url = `${requestContext.baseUrl}${path}`
     const headers = new Headers(config?.headers)
-    Object.entries(requestContext.headers).forEach(([name, value]) => {
-      headers.set(name, value)
-    })
-
-    let body: string | undefined
     if (method === 'post' || method === 'put') {
       headers.set('Content-Type', 'application/json')
-      body = JSON.stringify(data)
     }
 
     const { signal, cleanup } = createRequestSignal(config?.signal, config?.timeout)
     try {
-      const response = await fetch(url, {
-        method: method.toUpperCase(),
-        headers,
-        body,
-        signal,
-      })
+      const response = await sendBackendRequest<T>({
+        method: method.toUpperCase() as BackendProxyRequest['method'],
+        path,
+        headers: headersToRecord(headers),
+        body: method === 'post' || method === 'put' ? data : undefined,
+        timeout: config?.timeout,
+      }, signal)
 
-      const payload = await parseResponsePayload(response)
       if (!response.ok) {
         throw new ApiHttpError(
           response.status,
-          payload,
-          readMessageFromPayload(payload, `Request failed (${response.status}).`),
+          response.data,
+          readMessageFromPayload(response.data, `Request failed (${response.status}).`),
         )
       }
 
       return {
-        data: payload as T,
+        data: response.data as T,
         status: response.status,
         ok: response.ok,
-        headers: response.headers,
+        headers: new Headers(response.headers),
       }
     } finally {
       cleanup()
@@ -161,8 +169,6 @@ async function request<T>(method: 'get' | 'post' | 'put' | 'delete', path: strin
   try {
     return await send()
   } catch (error) {
-    // The backend rotates its local API token on restart, so clear stale cached
-    // request context and retry once when auth fails.
     if (isApiHttpError(error) && error.status === 401) {
       resetBackendBaseUrlCache()
       return send()
@@ -188,14 +194,16 @@ export function apiPut<T>(path: string, data?: unknown, config?: ApiRequestConfi
 }
 
 export async function getBackendBaseUrl() {
-  const requestContext = await resolveRequestContext()
-  return requestContext.baseUrl
+  return resolveBackendBaseUrl()
 }
 
 export async function getBackendRequestContext() {
-  return resolveRequestContext()
+  return {
+    baseUrl: await resolveBackendBaseUrl(),
+    headers: {},
+  }
 }
 
 export function resetBackendBaseUrlCache() {
-  requestContextPromise = null
+  backendBaseUrlPromise = null
 }

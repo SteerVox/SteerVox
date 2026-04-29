@@ -131,9 +131,10 @@ def test_default_config_prefers_local_defaults(isolated_steervox_home):
     assert payload["stt"]["provider"] == "mlx-whisper"
     assert payload["stt"]["model"] == "mlx-community/whisper-large-v3-turbo"
     assert payload["llm"]["provider"] == "lmstudio"
-    assert payload["llm"]["model"] == "local-model"
+    assert payload["llm"]["model"] == "google/gemma-4-e4b"
     assert payload["llm"]["routing"]["provider"] == "lmstudio"
-    assert payload["llm"]["routing"]["model"] == "local-model"
+    assert payload["llm"]["routing"]["model"] == "google/gemma-4-e4b"
+    assert payload["vision"]["model"] == "google/gemma-4-e4b"
     assert payload["domains"] == {
         "mode": "off",
         "app_domain_defaults": [],
@@ -1329,6 +1330,39 @@ def test_inbox_endpoints_list_and_delete_notes():
     assert missing_response.status_code == 404
 
 
+def test_library_endpoint_normalizes_notes_and_runs():
+    server = load_server()
+    client = TestClient(server.app)
+
+    server.inbox_store.append_note(build_inbox_note(
+        "buy milk",
+        context={"app_name": "Slack", "window_title": "Notes"},
+        source_mode="dictation",
+    ).model_copy(update={"created_at": "2026-03-16T09:00:00Z"}))
+    server.writing_tools_store.record_history(
+        mode="smart_transform",
+        transcript="make this concise",
+        final_output="A concise version of the update.",
+        telemetry={"output_mode": "plain_text", "skill_used": {"id": "system_dictation", "name": "Dictation"}},
+        context={"app_name": "Cursor", "window_title": "main.ts", "surface_kind": "chat_input"},
+        stt_provider="mlx-whisper",
+        stt_model="mlx-community/whisper-base-mlx",
+        llm_provider="lmstudio",
+        llm_model="local-model",
+    )
+
+    response = client.get("/library")
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [item["source_type"] for item in items] == ["history", "note"]
+    assert items[0]["metadata"]["skill_id"] == "system_dictation"
+    assert items[1]["metadata"]["source_kind"] == "spoken_text"
+
+    filtered = client.get("/library?filter=notes&q=milk")
+    assert filtered.status_code == 200
+    assert [item["source_type"] for item in filtered.json()["items"]] == ["note"]
+
+
 def test_memory_endpoints_rebuild_and_update_local_memories():
     server = load_server()
     client = TestClient(server.app)
@@ -1350,6 +1384,7 @@ def test_memory_endpoints_rebuild_and_update_local_memories():
     items = rebuild_response.json()["items"]
     assert len(items) == 1
     assert items[0]["kind"] == "writing_preference"
+    assert items[0]["source_library_ids"] == ["history:1"]
 
     list_response = client.get("/memories")
     assert list_response.status_code == 200

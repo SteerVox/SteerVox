@@ -51,6 +51,7 @@ def test_model_discovery_queries_nvidia_models_endpoint_when_key_is_present(monk
         def json():
             return {
                 "data": [
+                    {"id": "minimaxai/minimax-m2.7"},
                     {"id": "moonshotai/kimi-k2-instruct-0905"},
                     {"id": "qwen/qwen3-coder-480b-a35b-instruct"},
                     {"id": "nvidia/llama-3.1-nemotron-ultra-253b-v1"},
@@ -74,6 +75,7 @@ def test_model_discovery_queries_nvidia_models_endpoint_when_key_is_present(monk
         "timeout": 10,
     }]
     assert [item["id"] for item in result["llm"]] == [
+        "minimaxai/minimax-m2.7",
         "moonshotai/kimi-k2-instruct-0905",
         "qwen/qwen3-coder-480b-a35b-instruct",
         "nvidia/llama-3.1-nemotron-ultra-253b-v1",
@@ -117,7 +119,7 @@ def test_model_discovery_returns_lmstudio_placeholder_when_local_server_is_unava
     assert result == {
         "llm": DEFAULT_MODELS["llm"]["lmstudio"],
         "stt": [],
-        "vision": [],
+        "vision": DEFAULT_MODELS["vision"]["lmstudio"],
     }
 
 
@@ -289,6 +291,7 @@ def test_model_discovery_uses_native_lmstudio_models_endpoint(monkeypatch):
         "llm": [{
             "id": "nemotron-4b",
             "name": "Nemotron 4B",
+            "discovered": True,
             "loaded": False,
             "vision": False,
             "tool_use": False,
@@ -298,7 +301,7 @@ def test_model_discovery_uses_native_lmstudio_models_endpoint(monkeypatch):
             "max_context_length": None,
         }],
         "stt": [],
-        "vision": [],
+        "vision": DEFAULT_MODELS["vision"]["lmstudio"],
     }
     assert calls == [{
         "url": "http://localhost:1234/api/v1/models",
@@ -343,6 +346,7 @@ def test_model_discovery_exposes_lmstudio_vision_models_separately(monkeypatch):
         {
             "id": "granite-vision",
             "name": "Granite Vision",
+            "discovered": True,
             "loaded": True,
             "vision": True,
             "tool_use": False,
@@ -354,6 +358,7 @@ def test_model_discovery_exposes_lmstudio_vision_models_separately(monkeypatch):
         {
             "id": "nemotron-4b",
             "name": "Nemotron 4B",
+            "discovered": True,
             "loaded": False,
             "vision": False,
             "tool_use": False,
@@ -366,6 +371,7 @@ def test_model_discovery_exposes_lmstudio_vision_models_separately(monkeypatch):
     assert result["vision"] == [{
         "id": "granite-vision",
         "name": "Granite Vision",
+        "discovered": True,
         "loaded": True,
         "vision": True,
         "tool_use": False,
@@ -442,6 +448,7 @@ def test_model_discovery_marks_tool_use_local_models_as_smart_ready(monkeypatch)
     assert result["llm"] == [{
         "id": "qwen2.5-7b-instruct",
         "name": "Qwen2.5 7B Instruct",
+        "discovered": True,
         "loaded": True,
         "vision": False,
         "tool_use": True,
@@ -451,6 +458,63 @@ def test_model_discovery_marks_tool_use_local_models_as_smart_ready(monkeypatch)
         "max_context_length": 32768,
     }]
     assert ModelDiscovery.resolve_lmstudio_smart_model(require_loaded=True) == "qwen2.5-7b-instruct"
+
+
+def test_model_discovery_treats_gemma_4_e4b_as_smart_ready_even_with_vision(monkeypatch):
+    model_discovery._cache.clear()
+
+    class Response:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "models": [
+                    {
+                        "type": "llm",
+                        "key": "google/gemma-4-e4b",
+                        "display_name": "Gemma 4 E4B",
+                        "paramsString": "4B",
+                        "loaded_instances": [],
+                        "capabilities": {"vision": True},
+                    },
+                ]
+            }
+
+    monkeypatch.setattr("security.secrets_manager.SecretsManager.get_api_key", lambda provider: None)
+    monkeypatch.setattr(model_discovery.requests, "get", lambda *_args, **_kwargs: Response())
+
+    result = ModelDiscovery.list_models("lmstudio")
+
+    assert result["llm"] == [{
+        "id": "google/gemma-4-e4b",
+        "name": "Gemma 4 E4B",
+        "discovered": True,
+        "loaded": False,
+        "vision": True,
+        "tool_use": False,
+        "reasoning": False,
+        "smart_capable": True,
+        "recommended_for_smart": True,
+        "max_context_length": None,
+    }]
+
+
+def test_model_discovery_marks_fallback_lmstudio_models_as_not_discovered(monkeypatch):
+    model_discovery._cache.clear()
+
+    def raise_connection_error(*_args, **_kwargs):
+        raise requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr("security.secrets_manager.SecretsManager.get_api_key", lambda provider: None)
+    monkeypatch.setattr(model_discovery.requests, "get", raise_connection_error)
+
+    result = ModelDiscovery.list_models("lmstudio")
+
+    assert result["llm"][0]["id"] == "google/gemma-4-e4b"
+    assert result["llm"][0]["discovered"] is False
+    assert result["vision"][0]["id"] == "google/gemma-4-e4b"
+    assert result["vision"][0]["discovered"] is False
 
 
 def test_model_discovery_resolves_medgemma_models_by_pattern(monkeypatch):

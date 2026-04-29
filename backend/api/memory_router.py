@@ -48,10 +48,7 @@ def build_memory_router(state: BackendAppState) -> APIRouter:
     @router.post("/memories/rebuild")
     def rebuild_memories():
         try:
-            items = state.memory_store.rebuild_from_history(
-                state.writing_tools_store.list_history(limit=500),
-                reset_tombstones=True,
-            )
+            items = state.rebuild_library_memory(reset_tombstones=True)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         return {"status": "success", "items": [item.model_dump(mode="json") for item in items]}

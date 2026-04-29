@@ -31,7 +31,6 @@ class SmartIntent(str, Enum):
     TRANSLATE = "translate"
     WORKFLOW_DESIGN = "workflow_design"
     GENERIC = "generic"
-    LOCAL_UNSUPPORTED = "local_unsupported"
 
 
 class SkillReference(BaseModel):
@@ -76,7 +75,7 @@ class SmartRunTelemetry(BaseModel):
     command_operations_applied: List[str] = Field(default_factory=list)
     format_contract: Optional[str] = None
     surface_contract_applied: bool = False
-    smart_profile: Literal["default", "local_compact"] = "default"
+    smart_profile: Literal["default"] = "default"
     profile_limit_reason: Optional[str] = None
     provider: Optional[str] = None
     model: Optional[str] = None

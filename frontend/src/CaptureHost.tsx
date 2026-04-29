@@ -38,9 +38,11 @@ type ActiveSession = {
   liveSessionId: string | null
   liveChunks: Uint8Array[]
   liveChunkBytes: number
+  limitReached: boolean
 }
 
 const CAPTURE_SAMPLE_RATE = 16_000
+const MAX_CAPTURE_DURATION_SECONDS = 5 * 60
 const SILENCE_THRESHOLD = 0.003
 const FALLBACK_PROBE_MS = 1_250
 
@@ -149,6 +151,18 @@ function encodePcm16(samples: Float32Array) {
     view.setInt16(index * 2, sample < 0 ? sample * 0x8000 : sample * 0x7fff, true)
   }
   return new Uint8Array(buffer)
+}
+
+function calculateChunkStats(samples: Float32Array) {
+  let peak = 0
+  let sumSquares = 0
+  for (let index = 0; index < samples.length; index += 1) {
+    const sample = samples[index]
+    const abs = Math.abs(sample)
+    if (abs > peak) peak = abs
+    sumSquares += sample * sample
+  }
+  return { peak, sumSquares }
 }
 
 async function listInputDevices() {
@@ -367,7 +381,7 @@ export function CaptureHost() {
           active_device_label: session.usedDeviceLabel,
           fallback_to_default: session.fallbackToDefault,
           fallback_notice: session.fallbackNotice,
-          error: null,
+          error: session.limitReached ? captureState.error : null,
         })
         if (session.amplitudeResetTimer) window.clearTimeout(session.amplitudeResetTimer)
         session.amplitudeResetTimer = window.setTimeout(() => {
@@ -377,9 +391,31 @@ export function CaptureHost() {
       }
 
       const appendChunk = (chunk: Float32Array) => {
-        session.chunks.push(chunk)
-        session.totalFrames += chunk.length
-        queueLiveChunk(session, chunk)
+        if (session.limitReached) return null
+
+        const maxFrames = Math.floor(session.sampleRate * MAX_CAPTURE_DURATION_SECONDS)
+        const remainingFrames = Math.max(0, maxFrames - session.totalFrames)
+        if (!remainingFrames) {
+          session.limitReached = true
+          pushState({
+              error: `Maximum recording length is ${Math.round(MAX_CAPTURE_DURATION_SECONDS / 60)} minutes. Stop to process this recording.`,
+            })
+          return null
+        }
+
+        const acceptedChunk = chunk.length > remainingFrames ? chunk.slice(0, remainingFrames) : chunk
+        session.chunks.push(acceptedChunk)
+        session.totalFrames += acceptedChunk.length
+        queueLiveChunk(session, acceptedChunk)
+
+        if (acceptedChunk.length < chunk.length || session.totalFrames >= maxFrames) {
+          session.limitReached = true
+          pushState({
+            error: `Maximum recording length is ${Math.round(MAX_CAPTURE_DURATION_SECONDS / 60)} minutes. Stop to process this recording.`,
+          })
+        }
+
+        return acceptedChunk
       }
 
       if (await ensureAudioWorkletLoaded(audioContext)) {
@@ -391,9 +427,12 @@ export function CaptureHost() {
             sumSquares: number
           }
           if (generation !== commandGeneration) return
-          appendChunk(samples)
-          session.peak = Math.max(session.peak, peak)
-          session.sumSquares += sumSquares
+          const acceptedChunk = appendChunk(samples)
+          if (acceptedChunk) {
+            const metrics = acceptedChunk === samples ? { peak, sumSquares } : calculateChunkStats(acceptedChunk)
+            session.peak = Math.max(session.peak, metrics.peak)
+            session.sumSquares += metrics.sumSquares
+          }
           sendAmplitude(peak)
         }
         source.connect(node)
@@ -416,9 +455,12 @@ export function CaptureHost() {
           if (abs > peak) peak = abs
           sumSquares += sample * sample
         }
-        appendChunk(chunk)
-        session.peak = Math.max(session.peak, peak)
-        session.sumSquares += sumSquares
+        const acceptedChunk = appendChunk(chunk)
+        if (acceptedChunk) {
+          const metrics = acceptedChunk === chunk ? { peak, sumSquares } : calculateChunkStats(acceptedChunk)
+          session.peak = Math.max(session.peak, metrics.peak)
+          session.sumSquares += metrics.sumSquares
+        }
         sendAmplitude(peak)
       }
       source.connect(node)
@@ -512,6 +554,7 @@ export function CaptureHost() {
         liveSessionId: kind === 'recording' ? (liveSessionId ?? null) : null,
         liveChunks: [],
         liveChunkBytes: 0,
+        limitReached: false,
       }
 
       const nodes = await buildCaptureNodes(

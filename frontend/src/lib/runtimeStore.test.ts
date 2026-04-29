@@ -1,31 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { LOCAL_BACKEND_AUTH_HEADER } from '../../shared/localBackendAuth'
 import { createRuntimeStore } from './runtimeStore'
 
-const { apiGetMock, getBackendRequestContextMock, isApiHttpErrorMock } = vi.hoisted(() => ({
+const { apiGetMock, isApiHttpErrorMock } = vi.hoisted(() => ({
   apiGetMock: vi.fn(),
-  getBackendRequestContextMock: vi.fn(),
   isApiHttpErrorMock: vi.fn().mockReturnValue(false),
 }))
 
 vi.mock('./api', () => ({
   apiGet: apiGetMock,
-  getBackendRequestContext: getBackendRequestContextMock,
   isApiHttpError: isApiHttpErrorMock,
 }))
 
 class MockRuntimeEventStream {
   static instances: MockRuntimeEventStream[] = []
 
-  requestContext: { baseUrl: string; headers: Record<string, string> }
   onopen: ((event: Event) => void) | null = null
   onerror: ((event: Event) => void) | null = null
   close = vi.fn()
   private listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>()
 
-  constructor(requestContext: { baseUrl: string; headers: Record<string, string> }) {
-    this.requestContext = requestContext
+  constructor() {
     MockRuntimeEventStream.instances.push(this)
   }
 
@@ -60,8 +55,8 @@ class MockRuntimeEventStream {
   }
 }
 
-async function createMockRuntimeEventStream(requestContext: { baseUrl: string; headers: Record<string, string> }) {
-  return new MockRuntimeEventStream(requestContext)
+async function createMockRuntimeEventStream() {
+  return new MockRuntimeEventStream()
 }
 
 async function flushMicrotasks() {
@@ -74,13 +69,8 @@ describe('runtime store', () => {
     vi.useFakeTimers()
     MockRuntimeEventStream.instances = []
     apiGetMock.mockReset()
-    getBackendRequestContextMock.mockReset()
     isApiHttpErrorMock.mockReset()
     isApiHttpErrorMock.mockReturnValue(false)
-    getBackendRequestContextMock.mockResolvedValue({
-      baseUrl: 'http://127.0.0.1:8055',
-      headers: { [LOCAL_BACKEND_AUTH_HEADER]: 'test-token' },
-    })
     apiGetMock.mockImplementation((path: string) => {
       if (path === '/providers/models') {
         return Promise.resolve({

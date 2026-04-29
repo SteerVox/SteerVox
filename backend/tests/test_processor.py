@@ -404,6 +404,49 @@ def test_processor_builds_bounded_youtube_browser_plan_for_computer_use(monkeypa
     assert fake_agent.calls == 0
 
 
+def test_processor_routes_polite_open_app_request_into_computer_use(monkeypatch):
+    fake_agent = FakeSupervisorAgent("should not be used")
+    processor = SmartModeProcessor(
+        provider="lmstudio",
+        model="local-model",
+        temperature=0.0,
+        agent=fake_agent,
+    )
+
+    monkeypatch.setattr(
+        processor.reviewed_action_builder,
+        "build",
+        lambda **_kwargs: ActionBuildResult(
+            pending_review=PendingActionReview(
+                run_id="review-open-chrome",
+                action_type="open_app",
+                title="Open App",
+                summary="Open Google Chrome.",
+                script='tell application id "com.google.Chrome"\nreopen\nactivate\nend tell',
+            )
+        ),
+    )
+
+    result = processor.process(
+        "could you please open Chrome for me?",
+        {
+            "app_name": "Notes",
+            "window_title": "Scratchpad",
+            "context_quality": "full",
+            "target_type": "editor",
+        },
+        DefaultSkills.DICTATION.id,
+    )
+
+    assert result.intent == SmartIntent.COMPUTER_USE
+    assert result.pending_action_review is not None
+    assert result.pending_action_review.action_type == "open_app"
+    assert result.action_error is None
+    assert result.telemetry.computer_use_trigger == "action_phrase"
+    assert result.telemetry.computer_use_plan_kind == "desktop_action"
+    assert fake_agent.calls == 0
+
+
 def test_processor_uses_smart_router_for_ambiguous_llm_routes():
     fake_agent = FakeSupervisorAgent("def parse_payload(data):\n    return data.strip()\n")
     fake_router_agent = FakeSmartRouterAgent(
@@ -597,7 +640,7 @@ def test_processor_keeps_smart_mode_fully_local_for_lmstudio():
 
 
 def test_processor_skips_local_smart_router_for_lmstudio_even_when_configured():
-    fake_agent = FakeSupervisorAgent("Selected text made polite.")
+    fake_agent = FakeSupervisorAgent("Use a clearer structure for the paragraph before sending it.")
     fake_router_agent = FakeSmartRouterAgent(
         SmartRouterAgentResult(
             intent=SmartIntent.GENERIC,
@@ -629,9 +672,42 @@ def test_processor_skips_local_smart_router_for_lmstudio_even_when_configured():
     )
 
     assert fake_router_agent.calls == 0
-    assert result.intent == SmartIntent.LOCAL_UNSUPPORTED
-    assert result.lane == SmartLane.REFUSED
+    assert fake_agent.calls == 1
+    assert result.intent == SmartIntent.GENERIC
+    assert result.lane == SmartLane.LLM
+    assert result.final_text == "Use a clearer structure for the paragraph before sending it."
     assert result.telemetry.planner_model_attempted is False
+
+
+def test_processor_allows_broad_prompt_requests_on_lmstudio():
+    fake_agent = FakeSupervisorAgent(
+        "Goal: Create detailed prompts for each section.\n\nSections:\n- Overview\n- Requirements\n- Verification"
+    )
+    processor = SmartModeProcessor(
+        provider="lmstudio",
+        model="google/gemma-4-e4b",
+        temperature=0.3,
+        agent=fake_agent,
+    )
+
+    result = processor.process(
+        "give me a detailed prompt for different sections of this project",
+        {
+            "app_name": "Notes",
+            "window_title": "Planning",
+            "context_quality": "full",
+            "target_type": "generic",
+        },
+        "system_prompt_architect",
+    )
+
+    assert fake_agent.calls == 1
+    assert result.intent == SmartIntent.PROMPT_CRAFTING
+    assert result.lane == SmartLane.LLM
+    assert result.final_text.startswith("Goal: Create detailed prompts")
+    assert result.refusal_message is None
+    assert result.telemetry.smart_profile == "default"
+    assert result.telemetry.profile_limit_reason is None
 
 
 def test_processor_falls_back_to_safe_local_cleanup_when_lmstudio_returns_empty_output():
@@ -694,7 +770,7 @@ def test_processor_normalizes_compact_local_labeled_segments_into_bullets():
     assert "normalize_local_labeled_segments" in result.deterministic_operations
 
 
-def test_processor_bypasses_local_compact_for_medical_domain_note_generation():
+def test_processor_uses_full_local_llm_for_medical_domain_note_generation():
     fake_agent = FakeSupervisorAgent(
         "HPI: Patient reports left-sided toothache for two months with intermittent clicking and popping sounds; denies other dental symptoms, decay, or recent tooth-related issues. Assessment details: pain duration noted, no visible decay or inspection findings. Follow-up: clinical review of clicking mechanism discussed."
     )
@@ -727,10 +803,9 @@ def test_processor_bypasses_local_compact_for_medical_domain_note_generation():
         "Follow-up: clinical review of clicking mechanism discussed.",
     ])
     assert result.telemetry.smart_profile == "default"
-    assert "local_compact_contract_id" not in (fake_agent.last_context or {})
 
 
-def test_processor_bypasses_local_compact_for_domain_email_generation():
+def test_processor_uses_full_local_llm_for_domain_email_generation():
     fake_agent = FakeSupervisorAgent("Subject: Shift handover update\n\nDear Team,\nContainer ETA moved to tomorrow.\n\nBest regards,")
     processor = SmartModeProcessor(
         provider="lmstudio",
@@ -757,7 +832,6 @@ def test_processor_bypasses_local_compact_for_domain_email_generation():
     assert fake_agent.calls == 1
     assert result.final_text == fake_agent.text
     assert result.telemetry.smart_profile == "default"
-    assert "local_compact_contract_id" not in (fake_agent.last_context or {})
 
 
 def test_processor_forwards_stream_preview_updates_to_the_supervisor_agent():
@@ -1267,7 +1341,7 @@ def test_processor_raises_when_supervisor_reports_llm_failure():
 def test_processor_falls_back_to_cleaned_source_when_lmstudio_times_out():
     fake_agent = FakeSupervisorAgent(
         None,
-        error="LM Studio local model timed out while generating output. Try a smaller model, reduce the prompt context, or try again.",
+        error="LM Studio local model timed out while generating output. The request was not completed; try again when the local model is ready.",
     )
     processor = SmartModeProcessor(
         provider="lmstudio",
@@ -1517,7 +1591,7 @@ def test_processor_returns_structured_action_error_when_action_builder_times_out
         processor.reviewed_action_builder,
         "build",
         lambda **_kwargs: (_ for _ in ()).throw(RuntimeError(
-            "LM Studio local model timed out while generating output. Try a smaller model, reduce the prompt context, or try again."
+            "LM Studio local model timed out while generating output. The request was not completed; try again when the local model is ready."
         )),
     )
 
@@ -1536,7 +1610,7 @@ def test_processor_returns_structured_action_error_when_action_builder_times_out
     assert result.pending_action_review is None
     assert result.auto_action is None
     assert result.final_text == ""
-    assert result.action_error == "LM Studio local model timed out while generating output. Try a smaller model, reduce the prompt context, or try again."
+    assert result.action_error == "LM Studio local model timed out while generating output. The request was not completed; try again when the local model is ready."
     assert result.action_error_kind == "resolution"
 
 
@@ -1715,7 +1789,11 @@ def test_processor_uses_screen_context_as_source_material_for_local_screen_summa
         "system_dictation",
     )
 
-    assert fake_agent.calls == 0
-    assert result.intent == SmartIntent.LOCAL_UNSUPPORTED
-    assert result.lane == SmartLane.REFUSED
-    assert result.refusal_message is not None
+    assert fake_agent.calls == 1
+    assert fake_agent.last_context["external_text"] == "Dashboard shows delayed shipments, open tasks, and three overdue items."
+    assert fake_agent.last_context["external_text_source"] == "screen_context"
+    assert result.intent == SmartIntent.GENERIC
+    assert result.lane == SmartLane.LLM
+    assert result.final_text == "Dashboard shows delayed shipments, open tasks, and three overdue items."
+    assert "screen_context_as_source_material" in result.deterministic_operations
+    assert "local_instruction_echo_fallback" in result.deterministic_operations

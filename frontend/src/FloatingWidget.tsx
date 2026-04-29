@@ -170,11 +170,6 @@ export const FloatingWidget = () => {
     ? 'idle'
     : widgetState
   const smartPreviewText = (smartPreview?.text || '').trim() || 'Generating preview…'
-  const smartProfileLabel = smartPreview?.smart_profile === 'local_compact'
-    ? (smartPreview.smart_profile_label || 'Local Smart profile')
-    : backendStatus?.last_smart_run?.smart_profile === 'local_compact'
-      ? 'Local Smart profile'
-      : null
   const liveTranscriptText = (liveTranscription?.text || '').trim()
   const liveTranscriptPrimary = liveTranscriptText
     || (captureState.phase === 'starting'
@@ -302,7 +297,7 @@ export const FloatingWidget = () => {
             ? 'Arming Smart capture'
             : 'Arming Dictate capture'
         : effectiveWidgetState === 'error_nokey'
-          ? 'Open Settings to finish provider setup.'
+          ? 'Open Settings to finish the active voice path.'
           : effectiveWidgetState === 'disconnected'
             ? `Reconnect ${DISPLAY_NAME} to keep dictating.`
             : isCapturing
@@ -554,6 +549,11 @@ export const FloatingWidget = () => {
                             options={templateOptions.map((template) => ({
                               id: template.id,
                               name: template.name,
+                              group: template.id === 'system_dictation'
+                                ? 'Dictation'
+                                : ['system_computer_use', 'system_local_task', 'system_terminal'].includes(template.id)
+                                  ? `${DISPLAY_NAME} actions`
+                                  : 'Smart writing',
                             }))}
                             selectedSkillId={runtimeConfig?.hotkeys.default_skill_id || templateOptions[0]?.id || ''}
                           />
@@ -614,14 +614,6 @@ export const FloatingWidget = () => {
                         </div>
                       ) : (
                         <div className="min-w-0">
-                          {showSmartPreview && smartProfileLabel ? (
-                            <div
-                              className="mb-1 inline-flex rounded-full border border-[#8ceef8]/18 bg-[#8ceef8]/10 px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] text-[#8ceef8]"
-                              data-testid="widget-smart-profile-badge"
-                            >
-                              {smartProfileLabel}
-                            </div>
-                          ) : null}
                           <div className={`truncate text-[14px] font-semibold tracking-[-0.015em] ${
                             isCapturing
                               ? activeMode === 'smart_transform'

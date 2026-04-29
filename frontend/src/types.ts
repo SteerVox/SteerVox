@@ -160,7 +160,7 @@ export interface SmartPreview {
   text: string
   final_text: string | null
   error: string | null
-  smart_profile?: 'default' | 'local_compact' | null
+  smart_profile?: 'default' | null
   smart_profile_label?: string | null
   updated_at: string
 }
@@ -264,12 +264,25 @@ export interface AppLaunchContext {
   onboarding_completed: boolean
   onboarding_dismissed: boolean
   dictation_tested: boolean
+  smart_tested?: boolean
   onboarding_blocker: string | null
   background_only: boolean
   log_paths: {
     backend: string
     electron: string
   }
+}
+
+export type DesktopLogKind = 'backend' | 'electron'
+
+export interface DesktopLogSnapshot {
+  kind: DesktopLogKind
+  path: string
+  exists: boolean
+  updated_at: number | null
+  content: string
+  truncated: boolean
+  error: string | null
 }
 
 export interface ProviderOption {
@@ -282,6 +295,7 @@ export interface ProviderOption {
 export interface ProviderModel {
   id: string
   name: string
+  discovered?: boolean
   loaded?: boolean
   vision?: boolean
   tool_use?: boolean
@@ -570,7 +584,7 @@ export interface SmartRunTelemetry {
   command_operations_applied: string[]
   format_contract: string | null
   surface_contract_applied: boolean
-  smart_profile: 'default' | 'local_compact'
+  smart_profile: 'default'
   profile_limit_reason: string | null
   provider: string | null
   model: string | null
@@ -652,6 +666,10 @@ export interface HomeReadinessState {
   rewriteProviderReady: boolean
   dictationReady: boolean
   rewriteReady: boolean
+  dictationProviderLabel: string
+  dictationProviderDetail: string
+  rewriteProviderLabel: string
+  rewriteProviderDetail: string
 }
 
 export interface OnboardingChecklistState {
@@ -660,6 +678,7 @@ export interface OnboardingChecklistState {
   dictationProviderReady: boolean
   dictationTested: boolean
   rewriteProviderReady: boolean
+  smartTested: boolean
   completed: boolean
 }
 
@@ -668,34 +687,53 @@ export interface OnboardingState extends OnboardingChecklistState {
   rewriteReady: boolean
 }
 
-export type LibraryFilter = 'all' | 'notes' | 'recent_runs'
+export type LibraryFilter = 'all' | 'notes' | 'runs' | 'smart' | 'dictate' | 'local_task' | 'computer_use'
 
-export type LibraryItem =
-  | {
-    kind: 'note'
-    id: string
-    created_at: string
-    app_name: string
-    window_title: string | null
-    output_mode: SkillOutputMode | null
-    source_mode: HistoryMode
-    source_kind: InboxNote['source_kind']
-    preview: string
-    search_text: string
-    note: InboxNote
-  }
-  | {
-    kind: 'history'
-    id: string
-    created_at: string
-    app_name: string
-    window_title: string | null
-    output_mode: SkillOutputMode | null
-    source_mode: HistoryMode
-    preview: string
-    search_text: string
-    history: HistoryItem
-  }
+export interface LibraryItemMetadata {
+  source_mode: string
+  source_kind: string
+  output_mode: SkillOutputMode | null
+  app_name: string
+  bundle_id: string | null
+  window_title: string | null
+  page_title: string | null
+  url_host: string | null
+  url_path: string | null
+  surface_kind: string | null
+  stt_provider: string | null
+  stt_model: string | null
+  llm_provider: string | null
+  llm_model: string | null
+  skill_id: string | null
+  skill_label: string | null
+  domain_id: string | null
+  intent: string | null
+  local_only: boolean
+  model_backed: boolean
+  transcript_chars: number
+  output_chars: number
+  duration_ms: number | null
+  step_count: number | null
+  completed_steps: number | null
+  failed_step_id: string | null
+  failed_step_title: string | null
+  memory_eligible: boolean
+  memory_state: 'eligible' | 'ignored' | null
+}
+
+export interface LibraryItem {
+  id: string
+  source_type: 'note' | 'history'
+  source_id: string
+  lane: 'note' | 'dictate' | 'smart' | 'local_task' | 'computer_use'
+  title: string
+  label: string
+  preview: string
+  created_at: string
+  primary_text: string
+  secondary_text: string | null
+  metadata: LibraryItemMetadata
+}
 
 export interface TemplateFormDraft {
   name: string
@@ -797,6 +835,7 @@ export interface AppConfig {
   debug: {
     log_sensitive_transcripts: boolean
     persist_recordings: boolean
+    developer_mode?: boolean
   }
   memory: {
     enabled: boolean
@@ -870,6 +909,7 @@ export interface LocalEnvironmentState {
   microphoneAccess: MicrophonePermissionStatus
   accessibilityTrusted: boolean
   contextAccess: SmartContextAccessStatus
+  mlxInstallState: MlxInstallState | null
   verifyingTarget: LocalEnvironmentVerificationTarget
 }
 

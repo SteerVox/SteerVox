@@ -4,6 +4,7 @@
   "version": "1.0.1",
   "description": "SteerVox desktop voice control application",
   "author": "SteerVox",
+  "license": "SEE LICENSE IN ../LICENSE.md",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {

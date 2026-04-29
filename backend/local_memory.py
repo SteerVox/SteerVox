@@ -11,13 +11,14 @@ from typing import Any, Iterable, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from library_models import LibraryMemorySource
 from semantic_memory import SemanticMemoryClient, SemanticMemoryItem
 from utils.logger import get_logger
 from utils.paths import get_app_home, safe_chmod
 from writing_memory import HistoryItem
 
 logger = get_logger()
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 LOCK_RETRY_DELAYS = (0.05, 0.1, 0.2)
 SQLITE_BUSY_TIMEOUT_SECONDS = 1.5
 MEMORY_CHAR_BUDGET = 900
@@ -93,6 +94,7 @@ class MemoryRecord(BaseModel):
     updated_at: str
     last_seen_at: str
     evidence_count: int
+    source_library_ids: list[str] = Field(default_factory=list)
     source_history_ids: list[int] = Field(default_factory=list)
     app_name: Optional[str] = None
     url_host: Optional[str] = None
@@ -111,10 +113,12 @@ class MemoryCandidate:
     kind: MemoryKind
     summary: str
     confidence: float
-    history_id: int
+    source_type: Literal["history", "note"]
+    source_id: str
     explicit: bool
     min_occurrences: int
     created_at: str
+    weight: float = 1.0
     app_name: Optional[str] = None
     url_host: Optional[str] = None
     domain_id: Optional[str] = None
@@ -127,7 +131,7 @@ class _CandidateAggregate:
     kind: MemoryKind
     summary: str
     base_confidence: float
-    history_ids: set[int] = field(default_factory=set)
+    source_ids: set[str] = field(default_factory=set)
     explicit: bool = False
     min_occurrences: int = 2
     last_seen_at: str = ""
@@ -167,10 +171,10 @@ def _expand_tokens(tokens: Iterable[str]) -> set[str]:
     return expanded
 
 
-def _build_support_text(transcript: str, final_output: str) -> str:
+def _build_support_text(primary_text: str, secondary_text: str) -> str:
     pieces = [
-        _clip_sentence(transcript, max_chars=MAX_SUPPORT_TEXT_CHARS),
-        _clip_sentence(final_output, max_chars=MAX_SUPPORT_TEXT_CHARS),
+        _clip_sentence(primary_text, max_chars=MAX_SUPPORT_TEXT_CHARS),
+        _clip_sentence(secondary_text, max_chars=MAX_SUPPORT_TEXT_CHARS),
     ]
     deduped: list[str] = []
     for piece in pieces:
@@ -216,13 +220,11 @@ def _clip_sentence(value: str, *, max_chars: int = 140) -> str:
     return f"{clipped}..."
 
 
-def _extract_scope(item: HistoryItem) -> tuple[Optional[str], Optional[str], Optional[str]]:
-    context = item.context or {}
-    telemetry = item.telemetry or {}
+def _extract_scope(source: LibraryMemorySource) -> tuple[Optional[str], Optional[str], Optional[str]]:
     return (
-        _normalize_scope_value(context.get("app_name")),
-        _normalize_scope_value(context.get("url_host")),
-        _normalize_scope_value(telemetry.get("domain_id") or context.get("domain_id")),
+        _normalize_scope_value(source.app_name),
+        _normalize_scope_value(source.url_host),
+        _normalize_scope_value(source.domain_id),
     )
 
 
@@ -283,7 +285,7 @@ class LocalMemoryStore:
                 "INSERT OR REPLACE INTO memory_tombstones (normalized_key, deleted_at) VALUES (?, ?)",
                 (normalized_key, _utc_timestamp()),
             )
-            conn.execute("DELETE FROM memory_observations WHERE normalized_key = ?", (normalized_key,))
+            conn.execute("DELETE FROM memory_observations_sources WHERE normalized_key = ?", (normalized_key,))
             self._delete_memory_row(conn, int(row["id"]))
 
         self._run_write_with_lock_retries(_write)
@@ -298,9 +300,9 @@ class LocalMemoryStore:
                     "INSERT OR REPLACE INTO memory_tombstones (normalized_key, deleted_at) VALUES (?, ?)",
                     (normalized_key, deleted_at),
                 )
-                conn.execute("DELETE FROM memory_observations WHERE normalized_key = ?", (normalized_key,))
+                conn.execute("DELETE FROM memory_observations_sources WHERE normalized_key = ?", (normalized_key,))
             conn.execute("DELETE FROM memory_fts")
-            conn.execute("DELETE FROM memory_evidence")
+            conn.execute("DELETE FROM memory_evidence_sources")
             conn.execute("DELETE FROM memories")
 
         self._run_write_with_lock_retries(_write)
@@ -311,7 +313,26 @@ class LocalMemoryStore:
         *,
         reset_tombstones: bool = False,
     ) -> list[MemoryRecord]:
-        observations = self._extract_memory_candidates(history_items)
+        observations = self._extract_memory_candidates(
+            self._history_items_to_sources(history_items)
+        )
+        return self._rebuild_from_candidates(observations, reset_tombstones=reset_tombstones)
+
+    def rebuild_from_library(
+        self,
+        sources: Iterable[LibraryMemorySource],
+        *,
+        reset_tombstones: bool = False,
+    ) -> list[MemoryRecord]:
+        observations = self._extract_memory_candidates(sources)
+        return self._rebuild_from_candidates(observations, reset_tombstones=reset_tombstones)
+
+    def _rebuild_from_candidates(
+        self,
+        observations: list[MemoryCandidate],
+        *,
+        reset_tombstones: bool,
+    ) -> list[MemoryRecord]:
         aggregates = self._aggregate_candidates(observations)
 
         def _write(conn: sqlite3.Connection) -> None:
@@ -330,13 +351,14 @@ class LocalMemoryStore:
                 for row in conn.execute("SELECT normalized_key FROM memory_tombstones").fetchall()
             }
 
-            conn.execute("DELETE FROM memory_observations")
+            conn.execute("DELETE FROM memory_observations_sources")
             for candidate in observations:
                 conn.execute(
                     """
-                    INSERT OR REPLACE INTO memory_observations (
+                    INSERT OR REPLACE INTO memory_observations_sources (
                         normalized_key,
-                        history_item_id,
+                        source_type,
+                        source_id,
                         kind,
                         summary,
                         confidence,
@@ -347,11 +369,12 @@ class LocalMemoryStore:
                         url_host,
                         domain_id,
                         support_text
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         candidate.normalized_key,
-                        candidate.history_id,
+                        candidate.source_type,
+                        candidate.source_id,
                         candidate.kind,
                         candidate.summary,
                         candidate.confidence,
@@ -365,7 +388,7 @@ class LocalMemoryStore:
                     ),
                 )
 
-            conn.execute("DELETE FROM memory_evidence")
+            conn.execute("DELETE FROM memory_evidence_sources")
             conn.execute("DELETE FROM memory_fts")
             active_keys: list[str] = []
 
@@ -373,7 +396,7 @@ class LocalMemoryStore:
                 if aggregate.normalized_key in tombstones:
                     continue
 
-                evidence_count = len(aggregate.history_ids)
+                evidence_count = len(aggregate.source_ids)
                 if not aggregate.explicit and evidence_count < aggregate.min_occurrences:
                     continue
 
@@ -383,7 +406,7 @@ class LocalMemoryStore:
                     existing_row=existing_by_key.get(aggregate.normalized_key),
                 )
                 active_keys.append(aggregate.normalized_key)
-                self._sync_memory_evidence(conn, memory_id, aggregate.history_ids)
+                self._sync_memory_evidence(conn, memory_id, aggregate.source_ids)
                 self._sync_memory_fts(
                     conn,
                     memory_id=memory_id,
@@ -399,7 +422,10 @@ class LocalMemoryStore:
         return self.list_memories()
 
     def learn_from_history_item(self, history_item: HistoryItem) -> list[MemoryRecord]:
-        candidates = self._extract_candidates(history_item)
+        return self.learn_from_library_source(self._history_item_to_source(history_item))
+
+    def learn_from_library_source(self, source: LibraryMemorySource) -> list[MemoryRecord]:
+        candidates = self._extract_candidates(source)
         if not candidates:
             return self.list_memories()
 
@@ -416,9 +442,10 @@ class LocalMemoryStore:
                 affected_keys.add(candidate.normalized_key)
                 conn.execute(
                     """
-                    INSERT OR REPLACE INTO memory_observations (
+                    INSERT OR REPLACE INTO memory_observations_sources (
                         normalized_key,
-                        history_item_id,
+                        source_type,
+                        source_id,
                         kind,
                         summary,
                         confidence,
@@ -429,11 +456,12 @@ class LocalMemoryStore:
                         url_host,
                         domain_id,
                         support_text
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         candidate.normalized_key,
-                        candidate.history_id,
+                        candidate.source_type,
+                        candidate.source_id,
                         candidate.kind,
                         candidate.summary,
                         candidate.confidence,
@@ -466,9 +494,9 @@ class LocalMemoryStore:
             observation_rows = conn.execute(
                 """
                 SELECT *
-                FROM memory_observations
+                FROM memory_observations_sources
                 WHERE normalized_key IN ({})
-                ORDER BY created_at ASC, history_item_id ASC
+                ORDER BY created_at ASC, source_type ASC, source_id ASC
                 """.format(", ".join(["?"] * len(affected_keys))),
                 tuple(sorted(affected_keys)),
             ).fetchall()
@@ -486,7 +514,7 @@ class LocalMemoryStore:
                     continue
 
                 memory_aggregate = aggregate[0]
-                evidence_count = len(memory_aggregate.history_ids)
+                evidence_count = len(memory_aggregate.source_ids)
                 if not memory_aggregate.explicit and evidence_count < memory_aggregate.min_occurrences:
                     if normalized_key in existing_by_key:
                         self._delete_memory_row(conn, int(existing_by_key[normalized_key]["id"]))
@@ -497,7 +525,7 @@ class LocalMemoryStore:
                     memory_aggregate,
                     existing_row=existing_by_key.get(normalized_key),
                 )
-                self._sync_memory_evidence(conn, memory_id, memory_aggregate.history_ids)
+                self._sync_memory_evidence(conn, memory_id, memory_aggregate.source_ids)
                 self._sync_memory_fts(
                     conn,
                     memory_id=memory_id,
@@ -625,20 +653,52 @@ class LocalMemoryStore:
                 break
         return selected
 
-    def _extract_memory_candidates(self, history_items: Iterable[HistoryItem]) -> list[MemoryCandidate]:
+    def _history_item_to_source(self, history_item: HistoryItem) -> LibraryMemorySource:
+        telemetry = history_item.telemetry or {}
+        context = history_item.context or {}
+        return LibraryMemorySource(
+            source_type="history",
+            source_id=str(history_item.id),
+            primary_text=str(history_item.final_output or history_item.transcript or ""),
+            secondary_text=str(history_item.transcript or "") if history_item.final_output else "",
+            source_mode=history_item.mode,
+            source_kind="run",
+            output_mode=telemetry.get("output_mode"),
+            app_name=context.get("app_name"),
+            url_host=context.get("url_host"),
+            domain_id=telemetry.get("domain_id") or context.get("domain_id"),
+            stt_provider=history_item.stt_provider,
+            stt_model=history_item.stt_model,
+            llm_provider=history_item.llm_provider,
+            llm_model=history_item.llm_model,
+            created_at=str(history_item.created_at or _utc_timestamp()),
+            memory_eligible=True,
+            memory_weight=1.0,
+        )
+
+    def _history_items_to_sources(self, history_items: Iterable[HistoryItem]) -> list[LibraryMemorySource]:
+        sources: list[LibraryMemorySource] = []
+        for item in history_items:
+            try:
+                sources.append(self._history_item_to_source(item))
+            except Exception as exc:
+                logger.warning("Local memory: failed to normalize history item into library source: %s", exc)
+        return sources
+
+    def _extract_memory_candidates(self, sources: Iterable[LibraryMemorySource]) -> list[MemoryCandidate]:
         observations: list[MemoryCandidate] = []
         scanned = 0
-        for item in history_items:
+        for source in sources:
             if scanned >= MAX_HISTORY_SCAN_ITEMS:
                 logger.info(
-                    "Local memory: stopped scanning history at %d items (cap)", MAX_HISTORY_SCAN_ITEMS
+                    "Local memory: stopped scanning library sources at %d items (cap)", MAX_HISTORY_SCAN_ITEMS
                 )
                 break
             scanned += 1
             try:
-                observations.extend(self._extract_candidates(item))
+                observations.extend(self._extract_candidates(source))
             except Exception as exc:
-                logger.warning("Local memory: failed to extract candidates for history item: %s", exc)
+                logger.warning("Local memory: failed to extract candidates for library source: %s", exc)
                 continue
         return observations
 
@@ -660,7 +720,7 @@ class LocalMemoryStore:
                     domain_id=candidate.domain_id,
                 )
                 grouped[candidate.normalized_key] = aggregate
-            aggregate.history_ids.add(candidate.history_id)
+            aggregate.source_ids.add(f"{candidate.source_type}:{candidate.source_id}")
             aggregate.base_confidence = max(aggregate.base_confidence, candidate.confidence)
             aggregate.explicit = aggregate.explicit or candidate.explicit
             aggregate.min_occurrences = min(aggregate.min_occurrences, candidate.min_occurrences)
@@ -674,19 +734,20 @@ class LocalMemoryStore:
                 aggregate.domain_id = candidate.domain_id or aggregate.domain_id
         return list(grouped.values())
 
-    def _extract_candidates(self, item: HistoryItem) -> list[MemoryCandidate]:
-        transcript = str(item.transcript or "").strip()
-        final_output = str(item.final_output or "").strip()
-        combined = "\n".join(part for part in (transcript, final_output) if part).strip()
+    def _extract_candidates(self, source: LibraryMemorySource) -> list[MemoryCandidate]:
+        primary_text = str(source.primary_text or "").strip()
+        secondary_text = str(source.secondary_text or "").strip()
+        combined = "\n".join(part for part in (primary_text, secondary_text) if part).strip()
         if not combined:
             return []
         if len(combined) > MAX_COMBINED_TEXT_CHARS:
             combined = combined[:MAX_COMBINED_TEXT_CHARS]
 
-        app_name, url_host, domain_id = _extract_scope(item)
-        created_at = str(item.created_at or _utc_timestamp())
-        support_text = _build_support_text(transcript, final_output)
+        app_name, url_host, domain_id = _extract_scope(source)
+        created_at = str(source.created_at or _utc_timestamp())
+        support_text = _build_support_text(primary_text, secondary_text)
         candidates: list[MemoryCandidate] = []
+        weight = max(0.1, float(source.memory_weight or 1.0))
 
         def add_candidate(
             *,
@@ -706,11 +767,13 @@ class LocalMemoryStore:
                     normalized_key=f"{kind}:{key}",
                     kind=kind,
                     summary=summary_text if summary_text.endswith(".") else f"{summary_text}.",
-                    confidence=confidence,
-                    history_id=item.id,
+                    confidence=max(0.1, min(0.99, confidence * weight)),
+                    source_type=source.source_type,
+                    source_id=source.source_id,
                     explicit=explicit,
                     min_occurrences=min_occurrences,
                     created_at=created_at,
+                    weight=weight,
                     app_name=app_name,
                     url_host=url_host,
                     domain_id=domain_id,
@@ -815,10 +878,12 @@ class LocalMemoryStore:
                     kind=str(row["kind"]),  # type: ignore[arg-type]
                     summary=str(row["summary"]),
                     confidence=float(row["confidence"]),
-                    history_id=int(row["history_item_id"]),
+                    source_type=str(row["source_type"]),  # type: ignore[arg-type]
+                    source_id=str(row["source_id"]),
                     explicit=bool(row["explicit"]),
                     min_occurrences=int(row["min_occurrences"]),
                     created_at=str(row["created_at"]),
+                    weight=1.0,
                     app_name=row["app_name"],
                     url_host=row["url_host"],
                     domain_id=row["domain_id"],
@@ -834,7 +899,7 @@ class LocalMemoryStore:
         *,
         existing_row: sqlite3.Row | None,
     ) -> int:
-        evidence_count = len(aggregate.history_ids)
+        evidence_count = len(aggregate.source_ids)
         enabled = bool(existing_row["enabled"]) if existing_row is not None else True
         created_at = (
             str(existing_row["created_at"])
@@ -903,20 +968,24 @@ class LocalMemoryStore:
         self,
         conn: sqlite3.Connection,
         memory_id: int,
-        history_ids: Iterable[int],
+        source_ids: Iterable[str],
     ) -> None:
         updated_at = _utc_timestamp()
-        conn.execute("DELETE FROM memory_evidence WHERE memory_id = ?", (memory_id,))
-        for history_id in sorted(set(int(value) for value in history_ids)):
+        conn.execute("DELETE FROM memory_evidence_sources WHERE memory_id = ?", (memory_id,))
+        for source_key in sorted(set(str(value) for value in source_ids)):
+            source_type, _, source_id = source_key.partition(":")
+            if not source_type or not source_id:
+                continue
             conn.execute(
                 """
-                INSERT INTO memory_evidence (
+                INSERT INTO memory_evidence_sources (
                     memory_id,
-                    history_item_id,
+                    source_type,
+                    source_id,
                     created_at
-                ) VALUES (?, ?, ?)
+                ) VALUES (?, ?, ?, ?)
                 """,
-                (memory_id, history_id, updated_at),
+                (memory_id, source_type, source_id, updated_at),
             )
 
     def _sync_memory_fts(self, conn: sqlite3.Connection, *, memory_id: int, retrieval_text: str) -> None:
@@ -1010,6 +1079,11 @@ class LocalMemoryStore:
                     version_row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
                     current_version = str(version_row["value"]) if version_row else None
                     if current_version == SCHEMA_VERSION:
+                        self._create_schema(conn)
+                        conn.commit()
+                        return
+                    if current_version == "2":
+                        self._migrate_v2_to_v3(conn)
                         return
             except Exception as exc:
                 logger.warning("Failed to inspect local memory database, rebuilding: %s", exc)
@@ -1033,6 +1107,64 @@ class LocalMemoryStore:
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA foreign_keys=ON")
         return conn
+
+    def _migrate_v2_to_v3(self, conn: sqlite3.Connection) -> None:
+        self._create_schema(conn)
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO memory_observations_sources (
+                normalized_key,
+                source_type,
+                source_id,
+                kind,
+                summary,
+                confidence,
+                explicit,
+                min_occurrences,
+                created_at,
+                app_name,
+                url_host,
+                domain_id,
+                support_text
+            )
+            SELECT
+                normalized_key,
+                'history',
+                CAST(history_item_id AS TEXT),
+                kind,
+                summary,
+                confidence,
+                explicit,
+                min_occurrences,
+                created_at,
+                app_name,
+                url_host,
+                domain_id,
+                support_text
+            FROM memory_observations
+            """
+        )
+        conn.execute(
+            """
+            INSERT OR IGNORE INTO memory_evidence_sources (
+                memory_id,
+                source_type,
+                source_id,
+                created_at
+            )
+            SELECT
+                memory_id,
+                'history',
+                CAST(history_item_id AS TEXT),
+                created_at
+            FROM memory_evidence
+            """
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)",
+            (SCHEMA_VERSION,),
+        )
+        conn.commit()
 
     def _create_schema(self, conn: sqlite3.Connection) -> None:
         conn.executescript(
@@ -1080,6 +1212,31 @@ class LocalMemoryStore:
                 support_text TEXT NOT NULL DEFAULT '',
                 PRIMARY KEY (normalized_key, history_item_id)
             );
+            CREATE TABLE IF NOT EXISTS memory_evidence_sources (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                memory_id INTEGER NOT NULL,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                UNIQUE(memory_id, source_type, source_id),
+                FOREIGN KEY (memory_id) REFERENCES memories(id) ON DELETE CASCADE
+            );
+            CREATE TABLE IF NOT EXISTS memory_observations_sources (
+                normalized_key TEXT NOT NULL,
+                source_type TEXT NOT NULL,
+                source_id TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                summary TEXT NOT NULL,
+                confidence REAL NOT NULL,
+                explicit INTEGER NOT NULL DEFAULT 0,
+                min_occurrences INTEGER NOT NULL DEFAULT 1,
+                created_at TEXT NOT NULL,
+                app_name TEXT,
+                url_host TEXT,
+                domain_id TEXT,
+                support_text TEXT NOT NULL DEFAULT '',
+                PRIMARY KEY (normalized_key, source_type, source_id)
+            );
             CREATE TABLE IF NOT EXISTS memory_tombstones (
                 normalized_key TEXT PRIMARY KEY,
                 deleted_at TEXT NOT NULL
@@ -1111,11 +1268,16 @@ class LocalMemoryStore:
             SELECT
                 m.*,
                 COALESCE(
-                    GROUP_CONCAT(me.history_item_id, ','),
+                    GROUP_CONCAT(CASE WHEN me.source_type = 'history' THEN me.source_id END, ','),
                     ''
                 ) AS source_history_ids
+                ,
+                COALESCE(
+                    GROUP_CONCAT(me.source_type || ':' || me.source_id, ','),
+                    ''
+                ) AS source_library_ids
             FROM memories m
-            LEFT JOIN memory_evidence me ON me.memory_id = m.id
+            LEFT JOIN memory_evidence_sources me ON me.memory_id = m.id
             {where_clause}
             GROUP BY m.id
             ORDER BY m.last_seen_at DESC, m.id DESC
@@ -1126,6 +1288,13 @@ class LocalMemoryStore:
         return [self._row_to_memory(row) for row in rows]
 
     def _row_to_memory(self, row: sqlite3.Row) -> MemoryRecord:
+        library_ids = sorted(
+            {
+                str(segment).strip()
+                for segment in str(row["source_library_ids"] or "").split(",")
+                if str(segment).strip()
+            }
+        )
         history_ids = [
             int(segment)
             for segment in str(row["source_history_ids"] or "").split(",")
@@ -1142,6 +1311,7 @@ class LocalMemoryStore:
             updated_at=str(row["updated_at"]),
             last_seen_at=str(row["last_seen_at"]),
             evidence_count=int(row["evidence_count"]),
+            source_library_ids=library_ids,
             source_history_ids=history_ids,
             app_name=row["app_name"],
             url_host=row["url_host"],

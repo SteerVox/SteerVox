@@ -21,6 +21,8 @@ release/
 releases/
 build/
 *.spec
+frontend/native/bin/*
+!frontend/native/bin/.gitkeep
 
 # IDEs
 .vscode/
@@ -33,13 +35,6 @@ build/
 
 # Local Product Notes
 LOCAL_APP_CAPABILITIES.md
-docs/*
-Docs/*
-!Docs/
-!Docs/steervox-local-task-shell.md
-!Docs/steervox-computer-use-guide.md
-!Docs/steervox-computer-use-validation-report.md
+docs/
+Docs/
 strategy/
-
-scripts/generate-brand-assets.swift
-scripts/prepare-mac-assets.sh

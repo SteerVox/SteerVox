@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 
-import { apiGet, getBackendRequestContext } from './api'
+import { apiGet } from './api'
 import { getErrorMessage } from './errors'
 import { createFetchRuntimeEventStream, type RuntimeEventStream, type RuntimeEventStreamFactory } from './runtimeEventStream'
 import { createLatestRequestController, delay, responseData, retryRead, settleRecord } from './runtime'
@@ -9,6 +9,7 @@ import type {
   KeyStatusMap,
   LocalEnvironmentState,
   LocalEnvironmentVerificationTarget,
+  MlxInstallState,
   MicrophonePermissionStatus,
   ProviderModels,
   RuntimeEventEnvelope,
@@ -107,6 +108,7 @@ const INITIAL_LOCAL_ENVIRONMENT: LocalEnvironmentState = {
   microphoneAccess: 'unknown',
   accessibilityTrusted: false,
   contextAccess: INITIAL_CONTEXT_ACCESS,
+  mlxInstallState: null,
   verifyingTarget: null,
 }
 
@@ -148,6 +150,7 @@ function createEnvironmentState(overrides?: Partial<LocalEnvironmentState>): Loc
     microphoneAccess: 'unknown',
     accessibilityTrusted: false,
     contextAccess: INITIAL_CONTEXT_ACCESS,
+    mlxInstallState: null,
     verifyingTarget: null,
     ...overrides,
   }
@@ -296,6 +299,7 @@ export class RuntimeStore {
       microphoneAccess: { status: 'fulfilled'; value: string } | { status: 'rejected'; reason: unknown }
       accessibilityTrusted: { status: 'fulfilled'; value: boolean } | { status: 'rejected'; reason: unknown }
       contextAccess: { status: 'fulfilled'; value: SmartContextAccessStatus } | { status: 'rejected'; reason: unknown }
+      mlxInstallState: { status: 'fulfilled'; value: MlxInstallState | null } | { status: 'rejected'; reason: unknown }
     },
     current: LocalEnvironmentState,
   ): LocalEnvironmentState {
@@ -308,6 +312,9 @@ export class RuntimeStore {
     const contextAccess = settled.contextAccess.status === 'fulfilled'
       ? settled.contextAccess.value || INITIAL_CONTEXT_ACCESS
       : current.contextAccess
+    const mlxInstallState = settled.mlxInstallState.status === 'fulfilled'
+      ? settled.mlxInstallState.value || null
+      : current.mlxInstallState
 
     return createEnvironmentState({
       status: 'ready',
@@ -316,6 +323,7 @@ export class RuntimeStore {
       microphoneAccess,
       accessibilityTrusted,
       contextAccess,
+      mlxInstallState,
       verifyingTarget: null,
     })
   }
@@ -363,6 +371,7 @@ export class RuntimeStore {
             contextAccess: promptContext
               ? window.windowControls?.promptSmartContextAccess?.() ?? Promise.resolve(INITIAL_CONTEXT_ACCESS)
               : window.windowControls?.checkSmartContextAccess?.() ?? Promise.resolve(INITIAL_CONTEXT_ACCESS),
+            mlxInstallState: window.windowControls?.getMlxInstallState?.() ?? Promise.resolve(null),
           })
         ), { signal: request.signal })
 
@@ -752,8 +761,7 @@ export class RuntimeStore {
     }))
 
     try {
-      const requestContext = await getBackendRequestContext()
-      const nextStream = await this.createEventStream(requestContext)
+      const nextStream = await this.createEventStream()
       this.eventStream = nextStream
 
       nextStream.onopen = () => {

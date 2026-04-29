@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+jobs:
+  backend:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install backend dependencies
+        run: |
+          python -m venv backend/.venv
+          backend/.venv/bin/python3 -m pip install --upgrade pip
+          backend/.venv/bin/python3 -m pip install -r backend/requirements-dev.txt
+      - name: Run backend tests
+        run: backend/.venv/bin/python3 -m pytest backend/tests -q
+      - name: Check backend dependency metadata
+        run: backend/.venv/bin/python3 -m pip check
+
+  frontend:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install frontend dependencies
+        working-directory: frontend
+        run: npm ci
+      - name: Lint
+        working-directory: frontend
+        run: npm run lint
+      - name: Typecheck
+        working-directory: frontend
+        run: ./node_modules/.bin/tsc -b
+      - name: Test
+        working-directory: frontend
+        run: npm test
+      - name: Build renderer and Electron bundles
+        working-directory: frontend
+        run: ./node_modules/.bin/vite build
+      - name: Audit production frontend dependencies
+        working-directory: frontend
+        run: npm audit --omit=dev

@@ -4,7 +4,6 @@ import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
 
-from agent.local_smart_profile import build_local_compact_prompt_contract
 from agent.router import infer_format_preference
 from providers.llm_factory import LLMFactory
 from providers.lmstudio_native import LMStudioNativeChat, THINKING_BLOCK_PATTERN
@@ -16,7 +15,7 @@ logger = get_logger()
 CASUAL_TONE_KEYWORDS = ("slack", "discord", "teams", "messages", "signal", "telegram")
 FORMAL_TONE_KEYWORDS = ("outlook", "mail", "gmail", "superhuman", "word", "pages", "docs")
 PROFESSIONAL_TONE_KEYWORDS = ("jira", "linear", "asana", "notion", "confluence")
-LOCAL_SMART_TIMEOUT_SECONDS = 12.0
+LOCAL_SMART_TIMEOUT_SECONDS = 60.0
 REMOTE_SMART_TIMEOUT_SECONDS = 18.0
 REMOTE_PROMPT_HEAVY_TIMEOUT_SECONDS = 24.0
 TIMEOUT_ERROR_MARKERS = (
@@ -200,7 +199,7 @@ class SupervisorAgent:
             error_message = "Smart Mode failed while generating the transformed result. Check your provider connection and try again."
             if timeout_triggered:
                 if self.provider.lower() == "lmstudio":
-                    error_message = "LM Studio local model timed out while generating output. Try a smaller model, reduce the prompt context, or try again."
+                    error_message = "LM Studio local model timed out while generating output. The request was not completed; try again when the local model is ready."
                 else:
                     error_message = f"{self.provider.title()} timed out while generating output. Smart Mode will fall back to safe local cleanup."
             elif self.provider.lower() == "lmstudio" and isinstance(e, RuntimeError):
@@ -378,12 +377,7 @@ class SupervisorAgent:
         return subject_text or body_text, "none"
 
     def _build_prompt_spec(self, raw_transcript: str, os_context: Dict[str, Any], skill: SkillDefinition) -> SupervisorPromptSpec:
-        smart_profile = str(os_context.get("smart_profile") or "").strip().lower()
-        compact_profile = smart_profile == "local_compact" or (
-            self.provider.lower() == "lmstudio" and not self._is_prompt_heavy_skill(skill)
-        )
-        if compact_profile:
-            return self._build_local_compact_prompt_spec(raw_transcript, os_context, skill)
+        compact_profile = False
         slim_context = self._should_use_slim_prompt_context(skill)
         context_block, context_fields_sent = self._build_context_block(
             os_context,
@@ -406,59 +400,6 @@ class SupervisorAgent:
         )
         all_context_fields_sent = context_fields_sent + external_fields_sent + screen_context_fields_sent + domain_fields_sent + memory_fields_sent + surface_fields_sent + format_fields_sent + tone_fields_sent + local_depth_fields_sent
         contract_block = self._build_contract_block(skill, minimal=slim_context)
-
-        if compact_profile:
-            instructions_block = self._build_compact_instructions_block(
-                context_block=context_block,
-                domain_block=domain_block,
-                memory_block=memory_block,
-                surface_contract_block=surface_contract_block,
-                format_preference_block=format_preference_block,
-                tone_guidance_block=tone_guidance_block,
-                external_block=external_block,
-                screen_context_block=screen_context_block,
-                local_depth_guidance_block=local_depth_guidance_block,
-            )
-            source_material_block = self._build_source_material_block(os_context)
-            payload_estimated_bytes = len(json.dumps({
-                "prompt": skill.prompt,
-                "contract": contract_block,
-                "instructions": instructions_block,
-                "transcript": raw_transcript,
-                "source_material": source_material_block,
-                "memory_context": memory_block,
-            }).encode("utf-8"))
-            return SupervisorPromptSpec(
-                system_template="""{system_instruction}
-
-Return only the transformed output.
-
---- SMART MODE SKILL CONTRACT ---
-{contract_block}
----------------------------------
-{instructions_block}
-""",
-                human_template="""Instruction:
-{transcript}
-{source_material_block}
-""",
-                invoke_payload={
-                    "system_instruction": skill.prompt,
-                    "contract_block": contract_block,
-                    "instructions_block": instructions_block or "",
-                    "transcript": raw_transcript,
-                    "source_material_block": source_material_block or "",
-                },
-                context_fields_sent=all_context_fields_sent,
-                payload_estimated_bytes=payload_estimated_bytes,
-                llm_temperature=min(self.temperature, 0.1),
-                llm_timeout=LOCAL_SMART_TIMEOUT_SECONDS,
-                llm_max_retries=0,
-                llm_max_tokens=self._resolve_local_max_tokens(skill),
-                llm_context_length=self._resolve_local_context_length(skill),
-                llm_reasoning_mode="off",
-                compact_profile=True,
-            )
 
         payload_estimated_bytes = len(json.dumps({
             "prompt": skill.prompt,
@@ -519,64 +460,7 @@ Return only the transformed output.
             llm_max_retries=0,
             llm_max_tokens=self._resolve_local_max_tokens(skill) if local_full_profile else None,
             llm_context_length=self._resolve_local_context_length(skill) if local_full_profile else None,
-            llm_reasoning_mode="off" if local_full_profile else None,
-        )
-
-    def _build_local_compact_prompt_spec(
-        self,
-        raw_transcript: str,
-        os_context: Dict[str, Any],
-        skill: SkillDefinition,
-    ) -> SupervisorPromptSpec:
-        contract_id = str(os_context.get("local_compact_contract_id") or "local_cleanup").strip()
-        contract = build_local_compact_prompt_contract(contract_id)
-        context_block, context_fields_sent = self._build_context_block(os_context, minimal=True)
-        external_block, external_fields_sent = self._build_external_text_block(os_context)
-        surface_contract_block, surface_fields_sent = self._build_surface_contract_block(os_context)
-        source_material_block = self._build_source_material_block(os_context)
-        instructions_sections = [
-            self._format_context_section(context_block),
-            self._format_surface_section(surface_contract_block),
-            self._format_external_text_section(external_block),
-        ]
-        instructions_block = "\n\n".join(section.strip() for section in instructions_sections if section.strip())
-        response_format = os_context.get("local_compact_response_format") or contract.response_format
-        response_schema_name = str(
-            os_context.get("local_compact_response_schema_name") or contract.response_schema_name or ""
-        ).strip() or None
-        payload_estimated_bytes = len(json.dumps({
-            "contract_id": contract.contract_id,
-            "instructions": instructions_block,
-            "transcript": raw_transcript,
-            "source_material": source_material_block,
-            "response_schema_name": response_schema_name,
-        }).encode("utf-8"))
-        return SupervisorPromptSpec(
-            system_template="""{contract_system_prompt}
-
-{instructions_block}""",
-            human_template="""Instruction:
-{transcript}
-{source_material_block}
-""",
-            invoke_payload={
-                "contract_system_prompt": contract.system_prompt,
-                "instructions_block": instructions_block or "",
-                "transcript": raw_transcript,
-                "source_material_block": source_material_block or "",
-            },
-            context_fields_sent=context_fields_sent + surface_fields_sent + external_fields_sent,
-            payload_estimated_bytes=payload_estimated_bytes,
-            llm_temperature=min(self.temperature, 0.1),
-            llm_timeout=LOCAL_SMART_TIMEOUT_SECONDS,
-            llm_max_retries=0,
-            llm_max_tokens=self._resolve_local_max_tokens(skill),
-            llm_context_length=self._resolve_local_context_length(skill),
-            llm_reasoning_mode="off",
-            llm_response_format=response_format if isinstance(response_format, dict) else None,
-            structured_output_schema_name=response_schema_name,
-            streaming_allowed=bool(os_context.get("local_compact_streaming_allowed", contract.streaming_allowed)),
-            compact_profile=True,
+            llm_reasoning_mode=None,
         )
 
     def _resolve_remote_timeout(self, skill: SkillDefinition) -> float:
@@ -600,15 +484,6 @@ Return only the transformed output.
         ).lower()
         return any(marker in detail for marker in TIMEOUT_ERROR_MARKERS)
 
-    def _should_use_compact_local_profile(self, skill: SkillDefinition) -> bool:
-        if self.provider.lower() != "lmstudio":
-            return False
-        if self._is_prompt_heavy_skill(skill):
-            return False
-
-        lowered_model = self.model_name.lower()
-        return any(marker in lowered_model for marker in ("1b", "2b", "3b", "4b", "nano", "mini"))
-
     def _is_prompt_heavy_skill(self, skill: SkillDefinition) -> bool:
         return (skill.style or "").strip().lower() in PROMPT_HEAVY_STYLES
 
@@ -617,18 +492,18 @@ Return only the transformed output.
 
     def _resolve_local_max_tokens(self, skill: SkillDefinition) -> int:
         if self._is_prompt_heavy_skill(skill):
-            return 3000
+            return 8192
         if skill.output_mode == "code":
-            return 2200
+            return 4096
         if skill.output_mode == "bullets":
-            return 1200
+            return 3000
         if skill.max_chars and skill.max_chars <= 120:
             return 512
         if skill.max_chars and skill.max_chars <= 400:
-            return 900
+            return 1200
         if skill.max_chars and skill.max_chars <= 1200:
-            return 1600
-        return 2200
+            return 3000
+        return 4096
 
     def _resolve_local_context_length(self, skill: SkillDefinition) -> int:
         resolved = self._resolve_loaded_lmstudio_context_length()
@@ -698,52 +573,6 @@ Return only the transformed output.
         if not resolved_lengths:
             return None
         return max(resolved_lengths)
-
-    def _build_compact_instructions_block(
-        self,
-        *,
-        context_block: str,
-        domain_block: str,
-        memory_block: str,
-        surface_contract_block: str,
-        format_preference_block: str,
-        tone_guidance_block: str,
-        external_block: str,
-        screen_context_block: str,
-        local_depth_guidance_block: str,
-    ) -> str:
-        sections = [
-            self._format_context_section(context_block),
-            self._format_domain_section(domain_block),
-            self._format_memory_section(memory_block),
-            self._format_surface_section(surface_contract_block),
-            self._format_format_section(format_preference_block),
-            self._format_tone_section(tone_guidance_block),
-            self._format_local_depth_section(local_depth_guidance_block),
-            self._format_screen_context_section(screen_context_block),
-            self._format_external_text_section(external_block),
-        ]
-        rendered_sections = [section.strip() for section in sections if section.strip()]
-        return "\n\n".join(rendered_sections)
-
-    def _build_source_material_block(self, os_context: Dict[str, Any]) -> str:
-        external_text = str(os_context.get("external_text") or "").strip()
-        if not external_text:
-            return ""
-        source = str(os_context.get("external_text_source") or "clipboard").strip().lower()
-        if source == "selection":
-            source_label = "selected text"
-        elif source == "transcript_inline":
-            source_label = "spoken source text"
-        elif source == "screen_context":
-            source_label = "screen context"
-        else:
-            source_label = "clipboard text"
-        return "\n".join([
-            "",
-            f"Source text to transform ({source_label}):",
-            external_text,
-        ]).strip()
 
     def _build_context_block(
         self,

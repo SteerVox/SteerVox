@@ -18,13 +18,13 @@ const baseConfig: AppConfig = {
     routing: {
       enabled: true,
       provider: 'lmstudio',
-      model: 'local-model',
+      model: 'google/gemma-4-e4b',
       temperature: 0,
     },
   },
   vision: {
     enabled: true,
-    model: null,
+    model: 'google/gemma-4-e4b',
     timeout_ms: 2500,
   },
   actions: {
@@ -66,7 +66,8 @@ const baseConfig: AppConfig = {
 const providerModels: ProviderModels = {
   llm: {
     groq: [{ id: 'llama-3.3-70b-versatile', name: 'Llama 3.3 70B' }],
-    lmstudio: [{ id: 'local-model', name: 'Local Model' }],
+    lmstudio: [{ id: 'google/gemma-4-e4b', name: 'Gemma 4 E4B', discovered: true, loaded: false, smart_capable: true }],
+    nvidia: [{ id: 'minimaxai/minimax-m2.7', name: 'MiniMax M2.7' }],
   },
   stt: {
     nvidia: [
@@ -106,17 +107,17 @@ describe('providerSettings', () => {
     const updated = applyProviderSelection(baseConfig, providerModels, 'llm', 'lmstudio')
 
     expect(updated.llm.provider).toBe('lmstudio')
-    expect(updated.llm.model).toBe('local-model')
+    expect(updated.llm.model).toBe('google/gemma-4-e4b')
     expect(updated.llm.routing.provider).toBe('lmstudio')
-    expect(updated.llm.routing.model).toBe('local-model')
+    expect(updated.llm.routing.model).toBe('google/gemma-4-e4b')
   })
 
   it('mirrors the Smart router model when the LLM model changes directly', () => {
-    const updated = applyModelSelection(baseConfig, 'llm', 'moonshotai/kimi-k2-instruct-0905')
+    const updated = applyModelSelection(baseConfig, 'llm', 'minimaxai/minimax-m2.7')
 
-    expect(updated.llm.model).toBe('moonshotai/kimi-k2-instruct-0905')
+    expect(updated.llm.model).toBe('minimaxai/minimax-m2.7')
     expect(updated.llm.routing.provider).toBe(baseConfig.llm.provider)
-    expect(updated.llm.routing.model).toBe('moonshotai/kimi-k2-instruct-0905')
+    expect(updated.llm.routing.model).toBe('minimaxai/minimax-m2.7')
   })
 
   it('prefers whisper turbo when switching back to the local stt provider', () => {
@@ -124,5 +125,30 @@ describe('providerSettings', () => {
 
     expect(updated.stt.provider).toBe('mlx-whisper')
     expect(updated.stt.model).toBe('mlx-community/whisper-large-v3-turbo')
+  })
+
+  it('keeps Gemma 4 E4B as the LM Studio default even when discovery returns other local models first', () => {
+    const updated = applyProviderSelection(baseConfig, {
+      ...providerModels,
+      llm: {
+        ...providerModels.llm,
+        lmstudio: [
+          { id: 'qwen/qwen3-4b-thinking-2507', name: 'Qwen 3 4B Thinking', discovered: true, loaded: true, smart_capable: true },
+        ],
+      },
+    }, 'llm', 'lmstudio')
+
+    expect(updated.llm.provider).toBe('lmstudio')
+    expect(updated.llm.model).toBe('google/gemma-4-e4b')
+    expect(updated.llm.routing.model).toBe('google/gemma-4-e4b')
+  })
+
+  it('prefers MiniMax M2.7 when switching to the NVIDIA Smart provider', () => {
+    const updated = applyProviderSelection(baseConfig, providerModels, 'llm', 'nvidia')
+
+    expect(updated.llm.provider).toBe('nvidia')
+    expect(updated.llm.model).toBe('minimaxai/minimax-m2.7')
+    expect(updated.llm.routing.provider).toBe('nvidia')
+    expect(updated.llm.routing.model).toBe('minimaxai/minimax-m2.7')
   })
 })

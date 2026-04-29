@@ -95,11 +95,11 @@ def test_llm_factory_builds_nvidia_client_via_openai_compat(monkeypatch):
     monkeypatch.setattr("security.secrets_manager.SecretsManager.get_api_key", lambda provider: "nvidia-key")
     monkeypatch.setitem(sys.modules, "langchain_openai", types.SimpleNamespace(ChatOpenAI=FakeChatOpenAI))
 
-    client = LLMFactory.get_llm("nvidia", "moonshotai/kimi-k2-instruct-0905", 0.0)
+    client = LLMFactory.get_llm("nvidia", "minimaxai/minimax-m2.7", 0.0)
 
     assert client is not None
     assert calls == [{
-        "model": "moonshotai/kimi-k2-instruct-0905",
+        "model": "minimaxai/minimax-m2.7",
         "temperature": 0.0,
         "api_key": "nvidia-key",
         "base_url": "https://integrate.api.nvidia.com/v1",
@@ -124,7 +124,7 @@ def test_llm_factory_forwards_timeout_controls_to_remote_openai_family_clients(m
 
     LLMFactory.get_llm(
         "nvidia",
-        "moonshotai/kimi-k2-instruct-0905",
+        "minimaxai/minimax-m2.7",
         0.0,
         timeout=18.0,
         max_retries=0,
@@ -132,7 +132,7 @@ def test_llm_factory_forwards_timeout_controls_to_remote_openai_family_clients(m
     )
 
     assert calls == [{
-        "model": "moonshotai/kimi-k2-instruct-0905",
+        "model": "minimaxai/minimax-m2.7",
         "temperature": 0.0,
         "api_key": "nvidia-key",
         "base_url": "https://integrate.api.nvidia.com/v1",

@@ -1,4 +1,6 @@
 import type { LiveTranscriptionMode } from '../types'
+import { DISPLAY_NAME } from '../../shared/branding'
+import { formatProviderDisplayName } from './providerLabels'
 
 export type LiveTranscriptionControlValue = 'enabled' | 'off'
 
@@ -15,15 +17,6 @@ const PROVIDER_STREAMING_PROVIDERS = new Set(['openai', 'deepgram'])
 
 function normalizeProvider(provider: string) {
   return String(provider || '').trim().toLowerCase()
-}
-
-function formatProviderName(provider: string) {
-  const normalized = normalizeProvider(provider)
-  if (normalized === 'openai') return 'OpenAI'
-  if (normalized === 'deepgram') return 'Deepgram'
-  if (normalized === 'mlx-whisper') return 'MLX Whisper'
-  if (!normalized) return 'This provider'
-  return normalized.charAt(0).toUpperCase() + normalized.slice(1)
 }
 
 export function providerSupportsLivePreview(provider: string) {
@@ -45,7 +38,7 @@ export function deriveLiveTranscriptionUiState({
   provider: string
   rawMode: LiveTranscriptionMode | null | undefined
 }): LiveTranscriptionUiState {
-  const providerName = formatProviderName(provider)
+  const providerName = formatProviderDisplayName(provider)
   const controlValue = getLiveTranscriptionControlValue(rawMode)
   const supportsLivePreview = providerSupportsLivePreview(provider)
 
@@ -56,7 +49,7 @@ export function deriveLiveTranscriptionUiState({
       capabilityLabel: controlValue === 'enabled' ? 'Provider preview on' : 'Preview off',
       capabilityTone: controlValue === 'enabled' ? 'good' : 'neutral',
       detail: controlValue === 'enabled'
-        ? `Shows a running transcript in VGet while ${providerName} finalizes speech in the background.`
+        ? `Shows a running transcript in ${DISPLAY_NAME} while ${providerName} finalizes speech in the background.`
         : 'Turns off the in-widget live transcript and waits for the final transcript after you stop.',
       help: 'Dictate shows exactly what will be pasted. Smart shows the live transcript first and rewrites it after you stop.',
     }
@@ -68,6 +61,6 @@ export function deriveLiveTranscriptionUiState({
     capabilityLabel: controlValue === 'off' ? 'Preview unavailable' : 'Final transcript only',
     capabilityTone: controlValue === 'off' ? 'neutral' : 'warn',
     detail: `${providerName} does not currently provide a working live in-widget transcript preview. Dictate and Smart stay on the final transcript path after you stop.`,
-    help: 'Switch to OpenAI or Deepgram if you want a live transcript preview in VGet. Older preview mode selections are ignored for unsupported providers.',
+    help: `Switch to OpenAI or Deepgram if you want a live transcript preview in ${DISPLAY_NAME}. Older preview mode selections are ignored for unsupported providers.`,
   }
 }

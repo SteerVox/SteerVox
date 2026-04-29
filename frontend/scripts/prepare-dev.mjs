@@ -65,6 +65,7 @@ async function ensureMacAssets() {
 async function main() {
   await run('node', ['../scripts/sync-branding.mjs'], 'Syncing branding files')
   await ensureMacAssets()
+  await run('node', ['scripts/prepare-ffmpeg-runtime.mjs'], 'Preparing ffmpeg runtime')
   await run('node', ['scripts/build-local-speech-helper.mjs'], 'Building local speech helper')
   await run('node', ['scripts/build-system-control-helper.mjs'], 'Building system control helper')
   await ensureBackendDevRuntime()

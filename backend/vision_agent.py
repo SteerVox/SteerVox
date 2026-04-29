@@ -5,7 +5,7 @@ from typing import Any, Optional
 import requests
 
 from config.models import AppConfig
-from providers.lmstudio_native import LMSTUDIO_NATIVE_BASE_URL, extract_lmstudio_output_text
+from providers.lmstudio_native import LMSTUDIO_NATIVE_BASE_URL, ensure_lmstudio_model_loaded, extract_lmstudio_output_text
 from providers.model_discovery import ModelDiscovery
 from utils.logger import get_logger
 
@@ -148,34 +148,42 @@ class VisionAgent:
         candidates: list[str] = []
         explicit_vision_model = str(config.vision.model or "").strip() or None
         selected_llm_model = str(config.llm.model or "").strip() or None
+        timeout_seconds = max(config.vision.timeout_ms / 1000.0, 0.5)
 
         if config.llm.provider.lower() == "lmstudio":
             if ModelDiscovery.lmstudio_supports_vision(selected_llm_model, require_loaded=True):
                 candidates.append(selected_llm_model)
             elif ModelDiscovery.lmstudio_supports_vision(selected_llm_model):
-                logger.info(
-                    "Local vision model %s is listed in LM Studio but not currently loaded. "
-                    "Vision will use another loaded vision model if available.",
+                if ensure_lmstudio_model_loaded(
                     selected_llm_model,
-                )
+                    timeout=timeout_seconds,
+                    require_vision=True,
+                ):
+                    candidates.append(selected_llm_model)
+                else:
+                    logger.info(
+                        "Local vision model %s is listed in LM Studio but could not be auto-loaded. "
+                        "Vision will stay pinned to the selected/configured model set.",
+                        selected_llm_model,
+                    )
 
         if explicit_vision_model:
             if ModelDiscovery.lmstudio_supports_vision(explicit_vision_model, require_loaded=True):
                 if explicit_vision_model not in candidates:
                     candidates.append(explicit_vision_model)
             elif ModelDiscovery.lmstudio_supports_vision(explicit_vision_model):
-                logger.info(
-                    "Configured vision model %s is listed in LM Studio but not currently loaded. "
-                    "Vision will use another loaded vision model if available.",
+                if ensure_lmstudio_model_loaded(
                     explicit_vision_model,
-                )
-
-        fallback_model = ModelDiscovery.resolve_lmstudio_vision_model(
-            explicit_vision_model or selected_llm_model,
-            require_loaded=True,
-            exclude_model_ids=set(candidates),
-        )
-        if fallback_model and fallback_model not in candidates:
-            candidates.append(fallback_model)
+                    timeout=timeout_seconds,
+                    require_vision=True,
+                ):
+                    if explicit_vision_model not in candidates:
+                        candidates.append(explicit_vision_model)
+                else:
+                    logger.info(
+                        "Configured vision model %s is listed in LM Studio but could not be auto-loaded. "
+                        "Vision will stay pinned to the selected/configured model set.",
+                        explicit_vision_model,
+                    )
 
         return candidates

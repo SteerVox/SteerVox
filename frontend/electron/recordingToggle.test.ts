@@ -47,12 +47,25 @@ describe('resolveRecordingToggleDecision', () => {
     expect(resolveRecordingToggleDecision({
       source: 'hotkey',
       now: 1_000,
-      hotkeyRearmUntil: 0,
+      hotkeyRearmUntil: 1_000 + HOTKEY_TOGGLE_REARM_MS,
       isToggleInProgress: false,
       captureIsRecording: true,
       activeCaptureKind: 'recording',
     })).toEqual({
       kind: 'stop',
+    })
+  })
+
+  it('queues one deferred stop when a hotkey arrives during async start', () => {
+    expect(resolveRecordingToggleDecision({
+      source: 'hotkey',
+      now: 1_000,
+      hotkeyRearmUntil: 0,
+      isToggleInProgress: true,
+      captureIsRecording: false,
+      activeCaptureKind: 'recording',
+    })).toEqual({
+      kind: 'defer_stop',
     })
   })
 

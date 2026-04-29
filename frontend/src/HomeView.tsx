@@ -6,8 +6,8 @@ import { BrandedProgressLoader } from './components/BrandedProgressLoader'
 import { ArrowRightIcon, CheckIcon, InboxIcon, MicIcon, SparkIcon, WarningIcon } from './components/BrandIcons'
 import { apiGet } from './lib/api'
 import { getErrorMessage, isAbortError } from './lib/errors'
-import { createLibraryItems, formatLibraryItemLabel, formatLibraryTimestamp } from './lib/library'
-import { providerRequiresKey } from './lib/onboarding'
+import { formatLibraryItemLabel, formatLibraryTimestamp } from './lib/library'
+import { formatProviderDisplayName } from './lib/providerLabels'
 import { buildLibraryRoute, buildSettingsRoute } from './lib/routes'
 import { selectOnboardingState, selectPrimaryAttentionIssue, selectReadinessState } from './lib/runtimeSelectors'
 import { createLatestRequestController, responseData, retryRead, settleRecord, withSignal } from './lib/runtime'
@@ -15,13 +15,11 @@ import { refreshRuntimeLocalEnvironment, useRuntimeStore } from './lib/runtimeSt
 import { useCaptureStateSubscription, useLaunchContextState } from './hooks/useDesktopBridgeState'
 import type {
   CaptureState,
-  HistoryItem,
-  InboxNote,
+  LibraryItem,
   SectionLoadState,
   RecordingMode,
 } from './types'
 
-type InboxResponse = { notes: InboxNote[] }
 const EMPTY_CAPTURE_STATE: CaptureState = {
   is_recording: false,
   is_testing: false,
@@ -164,22 +162,16 @@ export function HomeView() {
 
   const [recentState, setRecentState] = useState<SectionLoadState>(INITIAL_SECTION_STATE)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [historyItems, setHistoryItems] = useState<HistoryItem[]>([])
-  const [notes, setNotes] = useState<InboxNote[]>([])
+  const [recentItems, setRecentItems] = useState<LibraryItem[]>([])
   const [launchContext, setLaunchContext] = useLaunchContextState()
   const [captureState] = useCaptureStateSubscription(EMPTY_CAPTURE_STATE)
   const recentRequestsRef = useRef(createLatestRequestController())
-  const notesRef = useRef<InboxNote[]>([])
-  const historyRef = useRef<HistoryItem[]>([])
+  const recentItemsRef = useRef<LibraryItem[]>([])
   const recentStateRef = useRef<SectionLoadState>(INITIAL_SECTION_STATE)
 
   useEffect(() => {
-    notesRef.current = notes
-  }, [notes])
-
-  useEffect(() => {
-    historyRef.current = historyItems
-  }, [historyItems])
+    recentItemsRef.current = recentItems
+  }, [recentItems])
 
   useEffect(() => {
     recentStateRef.current = recentState
@@ -187,7 +179,7 @@ export function HomeView() {
 
   const loadRecentActivity = useCallback(async (quiet = false) => {
     const request = recentRequestsRef.current.begin()
-    if (!quiet || (!historyRef.current.length && !notesRef.current.length)) {
+    if (!quiet || !recentItemsRef.current.length) {
       setRecentState((current) => ({
         ...current,
         status: 'loading',
@@ -198,37 +190,27 @@ export function HomeView() {
     try {
       const settled = await retryRead(async (signal) => (
         settleRecord<{
-          history: Promise<{ items: HistoryItem[] }>
-          notes: Promise<InboxResponse>
+          library: Promise<{ items: LibraryItem[] }>
         }>({
-          history: apiGet<{ items: HistoryItem[] }>('/history', withSignal({ timeout: 10000 }, signal)).then(responseData),
-          notes: apiGet<InboxResponse>('/inbox', withSignal({ timeout: 10000 }, signal)).then(responseData),
+          library: apiGet<{ items: LibraryItem[] }>('/library?limit=3', withSignal({ timeout: 10000 }, signal)).then(responseData),
         })
       ), { signal: request.signal })
 
       if (!recentRequestsRef.current.isLatest(request.token)) return
 
-      if (settled.history.status === 'fulfilled') {
-        setHistoryItems(settled.history.value.items || [])
+      if (settled.library.status === 'fulfilled') {
+        setRecentItems(settled.library.value.items || [])
       }
-      if (settled.notes.status === 'fulfilled') {
-        setNotes(settled.notes.value.notes || [])
-      }
-
-      const errors = [
-        settled.history.status === 'rejected' ? 'Recent runs' : null,
-        settled.notes.status === 'rejected' ? 'Notes' : null,
-      ].filter(Boolean)
 
       setRecentState({
-        status: errors.length ? 'stale' : 'ready',
-        error: errors.length ? `${errors.join(' and ')} could not refresh. Showing the last successful load.` : null,
-        stale: Boolean(errors.length),
+        status: settled.library.status === 'fulfilled' ? 'ready' : 'stale',
+        error: settled.library.status === 'rejected' ? 'Library could not refresh. Showing the last successful load.' : null,
+        stale: settled.library.status === 'rejected',
         updatedAt: Date.now(),
       })
     } catch (nextError: unknown) {
       if (isAbortError(nextError) || !recentRequestsRef.current.isLatest(request.token)) return
-      const hasLastGoodData = historyRef.current.length > 0 || notesRef.current.length > 0
+      const hasLastGoodData = recentItemsRef.current.length > 0
       setRecentState({
         status: hasLastGoodData ? 'stale' : 'error',
         error: getErrorMessage(nextError, 'Unable to load recent activity right now.'),
@@ -331,15 +313,9 @@ export function HomeView() {
   const onboardingState = useMemo(() => selectOnboardingState(runtime), [runtime])
   const primaryAttentionIssue = useMemo(() => selectPrimaryAttentionIssue(runtime), [runtime])
 
-  const recentItems = useMemo(
-    () => createLibraryItems(notes, historyItems).slice(0, 3),
-    [historyItems, notes],
-  )
-
   const packagedInstallReady = !launchContext?.is_packaged || launchContext.install_location === 'applications'
   const packagedOnboardingReady = Boolean(onboardingState?.completed && packagedInstallReady)
   const showChecklist = Boolean(onboardingState && (!onboardingState.completed || !packagedInstallReady))
-  const showRewriteFollowUp = Boolean(packagedOnboardingReady && !onboardingState?.rewriteProviderReady)
   const isDictationRecording = captureState.is_recording && captureState.mode === 'dictation'
   const isRewriteRecording = captureState.is_recording && captureState.mode === 'smart_transform'
   const environmentPending = localEnvironment.status === 'checking' || localEnvironment.status === 'verifying'
@@ -402,7 +378,7 @@ export function HomeView() {
           {readinessState ? (
             <div className="flex flex-wrap items-center gap-2">
               <StatusPill label={environmentPending ? 'Checking access' : readinessState.dictationReady ? 'Dictation ready' : 'Dictation needs setup'} tone={environmentPending ? 'neutral' : readinessState.dictationReady ? 'good' : 'warn'} />
-              <StatusPill label={environmentPending ? 'Verifying readiness' : readinessState.rewriteReady ? 'Smart ready' : 'Smart optional'} tone={environmentPending ? 'neutral' : readinessState.rewriteReady ? 'good' : 'neutral'} />
+              <StatusPill label={environmentPending ? 'Verifying readiness' : readinessState.rewriteReady ? 'Smart ready' : 'Smart needs setup'} tone={environmentPending ? 'neutral' : readinessState.rewriteReady ? 'good' : 'warn'} />
             </div>
           ) : null}
         </div>
@@ -469,17 +445,13 @@ export function HomeView() {
               />
               <QuickStatusCard
                 label="Dictation provider"
-                detail={readinessState.dictationProviderReady
-                  ? providerRequiresKey(config?.stt.provider || '') ? `${config?.stt.provider || 'Provider'} is configured.` : `${config?.stt.provider || 'Provider'} is selected locally.`
-                  : providerRequiresKey(config?.stt.provider || '') ? `${config?.stt.provider || 'Provider'} needs an API key.` : `${config?.stt.provider || 'Provider'} still needs local setup.`}
+                detail={readinessState.dictationProviderDetail}
                 tone={readinessState.dictationProviderReady ? 'good' : 'warn'}
               />
               <QuickStatusCard
                 label="Smart provider"
-                detail={readinessState.rewriteProviderReady
-                  ? providerRequiresKey(config?.llm.provider || '') ? `${config?.llm.provider || 'Provider'} is configured.` : `${config?.llm.provider || 'Provider'} is selected. Add cloud keys only if you want hosted providers.`
-                  : providerRequiresKey(config?.llm.provider || '') ? `${config?.llm.provider || 'Provider'} is optional until you want a hosted Smart provider.` : `${config?.llm.provider || 'Provider'} still needs local setup.`}
-                tone={readinessState.rewriteProviderReady ? 'good' : 'neutral'}
+                detail={readinessState.rewriteProviderDetail}
+                tone={readinessState.rewriteProviderReady ? 'good' : 'warn'}
               />
             </div>
           </section>
@@ -490,9 +462,9 @@ export function HomeView() {
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">First success</div>
-                <h2 className="mt-2 text-xl font-semibold text-text-primary">Finish the voice checklist</h2>
+                <h2 className="mt-2 text-xl font-semibold text-text-primary">Finish the setup checklist</h2>
                 <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">
-                  This sequence is intentionally short: get dictation working first, then unlock Smart when you want it.
+                  This sequence is intentionally short: install correctly, get Dictation working, then confirm the Smart path on the same Mac.
                 </p>
               </div>
               <StatusPill label={onboardingState.completed ? 'Ready to finish' : 'In progress'} tone={onboardingState.completed ? 'good' : 'warn'} />
@@ -545,7 +517,7 @@ export function HomeView() {
               />
               <ChecklistRow
                 title="Configure dictation"
-                description="Use one provider path for speech recognition first. Start with the bundled local path if it is already ready; otherwise Groq is the fastest one-key option."
+                description={`Choose the active Dictation path first. ${formatProviderDisplayName(config?.stt.provider || '')} is currently selected.`}
                 completed={onboardingState.dictationProviderReady}
                 action={!onboardingState.dictationProviderReady ? (
                   <button
@@ -571,6 +543,34 @@ export function HomeView() {
                   </button>
                 ) : undefined}
               />
+              <ChecklistRow
+                title="Configure Smart"
+                description={`Choose the active Smart path. ${formatProviderDisplayName(config?.llm.provider || '')} is currently selected.`}
+                completed={onboardingState.rewriteProviderReady}
+                action={!onboardingState.rewriteProviderReady ? (
+                  <button
+                    type="button"
+                    onClick={() => navigate(buildSettingsRoute('rewrite'))}
+                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                  >
+                    Open Smart settings
+                  </button>
+                ) : undefined}
+              />
+              <ChecklistRow
+                title="Use Smart once"
+                description="Run one real Smart pass so you know the selected model and template route works end to end."
+                completed={onboardingState.smartTested}
+                action={!onboardingState.smartTested ? (
+                  <button
+                    type="button"
+                    onClick={() => void toggleRecording('smart_transform')}
+                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                  >
+                    {isRewriteRecording ? 'Stop Smart' : 'Start Smart'}
+                  </button>
+                ) : undefined}
+              />
             </div>
 
             {launchContext?.is_packaged && !launchContext.onboarding_completed ? (
@@ -588,30 +588,10 @@ export function HomeView() {
                   disabled={!packagedOnboardingReady}
                   className="rounded-2xl border border-accent-primary/20 bg-accent-primary px-4 py-2.5 text-sm font-medium text-[#021318] transition-colors hover:bg-[#46f0f4] disabled:cursor-not-allowed disabled:opacity-45"
                 >
-                  {packagedOnboardingReady ? 'Finish setup' : 'Finish after install and dictation'}
+                  {packagedOnboardingReady ? 'Finish setup' : 'Finish after install, Dictation, and Smart'}
                 </button>
               </div>
             ) : null}
-          </section>
-        ) : null}
-
-        {showRewriteFollowUp ? (
-          <section className="mt-6 rounded-[24px] border border-white/6 bg-white/[0.02] p-5">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <div className="text-sm font-medium text-text-primary">Smart is optional until you need it</div>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">
-                  Dictation is working. When you want the polished Smart path, add an LLM provider in Settings. Groq remains the simplest one-key option for both speech and Smart.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => navigate(buildSettingsRoute('rewrite'))}
-                className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
-              >
-                Open Smart settings
-              </button>
-            </div>
           </section>
         ) : null}
 
@@ -668,13 +648,13 @@ export function HomeView() {
             <div className="mt-5 space-y-3">
               {recentItems.length ? recentItems.map((item) => (
                 <button
-                  key={`${item.kind}:${item.id}`}
+                  key={item.id}
                   type="button"
-                  onClick={() => navigate(buildLibraryRoute(item.kind === 'note' ? 'notes' : 'recent_runs'))}
+                  onClick={() => navigate(buildLibraryRoute(item.source_type === 'note' ? 'notes' : 'runs'))}
                   className="w-full rounded-2xl border border-white/6 bg-black/20 px-4 py-3 text-left transition-colors hover:bg-black/26"
                 >
                   <div className="flex items-center justify-between gap-3">
-                    <div className="truncate text-[11px] uppercase tracking-[0.18em] text-text-muted">{item.app_name}</div>
+                    <div className="truncate text-[11px] uppercase tracking-[0.18em] text-text-muted">{item.metadata.app_name}</div>
                     <div className="shrink-0 text-[11px] uppercase tracking-[0.18em] text-text-muted">{formatLibraryTimestamp(item.created_at)}</div>
                   </div>
                   <div className="mt-2 text-sm leading-6 text-text-primary">{item.preview}</div>

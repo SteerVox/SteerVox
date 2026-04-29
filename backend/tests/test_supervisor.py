@@ -39,7 +39,7 @@ def test_supervisor_builds_casual_tone_guidance_for_chat_apps():
     assert fields == ["tone_guidance"]
 
 
-def test_supervisor_uses_compact_prompt_profile_for_small_lmstudio_models(monkeypatch):
+def test_supervisor_uses_full_prompt_profile_for_small_lmstudio_models(monkeypatch):
     _mock_loaded_lmstudio_model(
         monkeypatch,
         model_id="nvidia/nemotron-3-nano-4b",
@@ -60,17 +60,16 @@ def test_supervisor_uses_compact_prompt_profile_for_small_lmstudio_models(monkey
         DefaultSkills.SYSTEM_REWRITE,
     )
 
-    assert spec.compact_profile is True
-    assert spec.llm_temperature == 0.1
+    assert spec.compact_profile is False
+    assert spec.llm_temperature == 0.3
+    assert spec.llm_timeout == 60.0
     assert spec.llm_max_retries == 0
-    assert spec.llm_max_tokens == 2200
+    assert spec.llm_max_tokens == 4096
     assert spec.llm_context_length == 8192
-    assert spec.llm_reasoning_mode == "off"
-    assert "--- ACTIVE DOMAIN CONTEXT ---" not in spec.invoke_payload["instructions_block"]
-    assert "--- CURRENT EXTERNAL TEXT ---" in spec.invoke_payload["instructions_block"]
-    assert "--- ACTIVE SURFACE CONTRACT ---" in spec.invoke_payload["instructions_block"]
-    assert "transform the external text itself" in spec.invoke_payload["instructions_block"]
-    assert "Source text to transform (selected text):" in spec.invoke_payload["source_material_block"]
+    assert spec.llm_reasoning_mode is None
+    assert "--- CURRENT ACTIVE WINDOW CONTEXT ---" in spec.system_template
+    assert "--- CURRENT EXTERNAL TEXT ---" in spec.invoke_payload["external_text_section"]
+    assert "transform the external text itself" in spec.invoke_payload["external_text_section"]
 
 
 def test_supervisor_keeps_full_local_profile_for_prompt_heavy_skills(monkeypatch):
@@ -92,11 +91,11 @@ def test_supervisor_keeps_full_local_profile_for_prompt_heavy_skills(monkeypatch
     )
 
     assert spec.compact_profile is False
-    assert spec.llm_timeout == 12.0
+    assert spec.llm_timeout == 60.0
     assert spec.llm_max_retries == 0
-    assert spec.llm_max_tokens == 3000
+    assert spec.llm_max_tokens == 8192
     assert spec.llm_context_length == 8192
-    assert spec.llm_reasoning_mode == "off"
+    assert spec.llm_reasoning_mode is None
     assert "--- OUTPUT DEPTH GUIDANCE ---" in spec.invoke_payload["local_depth_section"]
     assert "Keep simple requests direct and shorter." in spec.invoke_payload["local_depth_section"]
     assert "Use sections only when they materially improve the result or when the user is clearly asking for a system or agent prompt." in spec.invoke_payload["local_depth_section"]
@@ -126,7 +125,7 @@ def test_supervisor_uses_slim_context_for_ai_chat_prompt_skill(monkeypatch):
         DefaultSkills.AI_CHAT_PROMPT,
     )
 
-    assert spec.llm_max_tokens == 3000
+    assert spec.llm_max_tokens == 8192
     assert spec.llm_context_length == 8192
     assert "Bundle ID:" not in spec.invoke_payload["context_block"]
     assert "Window Title:" not in spec.invoke_payload["context_block"]
@@ -157,7 +156,7 @@ def test_supervisor_allocates_larger_local_budget_for_coding_agent_prompt_skills
         DefaultSkills.CODEX_PROMPT,
     )
 
-    assert spec.llm_max_tokens == 3000
+    assert spec.llm_max_tokens == 8192
     assert spec.llm_context_length == 8192
     assert "Keep the primary requested outcome first" in spec.invoke_payload["local_depth_section"]
 
@@ -200,9 +199,8 @@ def test_supervisor_labels_inline_and_screen_source_material_for_local_models(mo
         DefaultSkills.DICTATION,
     )
 
-    assert "Source text to transform (spoken source text):" in inline_spec.invoke_payload["source_material_block"]
-    assert "The user spoke the following source text within the command:" in inline_spec.invoke_payload["instructions_block"]
-    assert "Source text to transform (screen context):" in screen_spec.invoke_payload["source_material_block"]
+    assert "The user spoke the following source text within the command:" in inline_spec.invoke_payload["external_text_section"]
+    assert "The local vision system extracted the following screen context:" in screen_spec.invoke_payload["external_text_section"]
 
 
 def test_supervisor_does_not_inject_passive_clipboard_text_into_local_prompt(monkeypatch):
@@ -224,8 +222,8 @@ def test_supervisor_does_not_inject_passive_clipboard_text_into_local_prompt(mon
         DefaultSkills.SYSTEM_REWRITE,
     )
 
-    assert "clipboard" not in spec.invoke_payload["instructions_block"].lower()
-    assert "stale clipboard draft" not in spec.invoke_payload["instructions_block"]
+    assert "clipboard" not in spec.invoke_payload["external_text_section"].lower()
+    assert "stale clipboard draft" not in spec.invoke_payload["external_text_section"]
     assert "clipboard_text" not in spec.context_fields_sent
 
 

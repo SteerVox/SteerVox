@@ -42,6 +42,40 @@ def test_local_task_policy_blocks_remote_git_subcommands(tmp_path):
     assert "contact a remote" in (decision.reason or "").lower()
 
 
+def test_local_task_policy_blocks_mutating_git_subcommands(tmp_path):
+    decision = evaluate_local_command_policy(
+        "git commit -am release",
+        cwd=str(tmp_path),
+        allowed_roots=[tmp_path.resolve()],
+    )
+
+    assert decision.allowed is False
+    assert "not allowlisted" in (decision.reason or "").lower()
+
+
+def test_local_task_policy_blocks_mutating_package_scripts(tmp_path):
+    decision = evaluate_local_command_policy(
+        "npm run build",
+        cwd=str(tmp_path),
+        allowed_roots=[tmp_path.resolve()],
+    )
+
+    assert decision.allowed is False
+    assert "not allowlisted" in (decision.reason or "").lower()
+
+
+def test_local_task_policy_allows_verification_scripts(tmp_path):
+    decision = evaluate_local_command_policy(
+        "npm run lint",
+        cwd=str(tmp_path),
+        allowed_roots=[tmp_path.resolve()],
+    )
+
+    assert decision.allowed is True
+    assert decision.read_only is True
+    assert decision.risk_level == "low"
+
+
 def test_local_task_service_creates_reviewed_run_and_approves_it(tmp_path):
     config_manager = ConfigManager()
     config_manager.update_config({

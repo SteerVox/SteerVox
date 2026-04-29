@@ -102,6 +102,12 @@ function createFallbackWidgetSkill(id: string, name: string): Skill {
   }
 }
 
+function resolveWidgetSkillGroup(skillId: string) {
+  if (skillId === 'system_dictation') return 'Dictation'
+  if (['system_computer_use', 'system_local_task', 'system_terminal'].includes(skillId)) return `${DISPLAY_NAME} actions`
+  return 'Smart writing'
+}
+
 const DEFAULT_WIDGET_TEMPLATE_OPTIONS: Skill[] = [
   createFallbackWidgetSkill('system_dictation', 'Standard Dictation'),
   createFallbackWidgetSkill('system_grammar', 'Fix Grammar & Tone'),
@@ -130,7 +136,20 @@ function isWidgetVisibleSkill(skill: Skill) {
 
 function normalizeWidgetTemplateOptions(skills: Skill[]) {
   const filtered = skills.filter(isWidgetVisibleSkill)
-  return filtered.length ? filtered : DEFAULT_WIDGET_TEMPLATE_OPTIONS
+  const resolved = filtered.length ? filtered : DEFAULT_WIDGET_TEMPLATE_OPTIONS
+  return [...resolved].sort((left, right) => {
+    const groupOrder = {
+      Dictation: 0,
+      'Smart writing': 1,
+      [`${DISPLAY_NAME} actions`]: 2,
+    }
+    const leftGroup = resolveWidgetSkillGroup(left.id)
+    const rightGroup = resolveWidgetSkillGroup(right.id)
+    if (groupOrder[leftGroup] !== groupOrder[rightGroup]) {
+      return groupOrder[leftGroup] - groupOrder[rightGroup]
+    }
+    return left.name.localeCompare(right.name)
+  })
 }
 
 export function useFloatingWidgetController() {
@@ -602,6 +621,7 @@ export function useFloatingWidgetController() {
       await clearErroredActionReview(pendingActionReview)
     }
     const dictationReady = Boolean(onboardingState?.dictationReady)
+    const smartReady = Boolean(onboardingState?.rewriteReady)
     if (mode === 'dictation' && !dictationReady) {
       await window.windowControls?.showMainWindow?.(buildSettingsRoute('voice'))
       setLastError('Dictation still needs setup. Open Voice settings to finish it.')
@@ -610,6 +630,11 @@ export function useFloatingWidgetController() {
     if (mode === 'smart_transform' && !dictationReady) {
       await window.windowControls?.showMainWindow?.(buildSettingsRoute('voice'))
       setLastError('Smart still needs the voice path to be ready first.')
+      return
+    }
+    if (mode === 'smart_transform' && !smartReady) {
+      await window.windowControls?.showMainWindow?.(buildSettingsRoute('rewrite'))
+      setLastError('Smart still needs setup. Open Smart settings to finish the active path.')
       return
     }
     try {

@@ -6,6 +6,7 @@ import { APP_HOME_DISPLAY_PATH } from '../shared/branding'
 import { BrandedProgressLoader } from './components/BrandedProgressLoader'
 import { ArrowRightIcon, ErrorIcon, SparkIcon, WindowCloseIcon } from './components/BrandIcons'
 import { apiDelete, apiGet, apiPost } from './lib/api'
+import { useRuntimeStore } from './lib/runtimeStore'
 import type { Skill, TemplateFormDraft, TemplatePackageDiagnostic } from './types'
 
 function parseCsvList(value: string) {
@@ -109,6 +110,12 @@ function formatFallbackBehavior(value: string) {
   if (value === 'system_dictation') return 'Standard Dictation'
   return formatToken(value)
 }
+
+const STANDARD_FALLBACK_OPTIONS = [
+  { value: 'selected_skill', label: 'Use this template' },
+  { value: 'raw_dictation', label: 'Raw dictation' },
+  { value: 'system_dictation', label: 'Standard Dictation' },
+] as const
 
 function formatTargetTypeLabel(value: string) {
   if (value === 'generic') return 'Any app'
@@ -219,6 +226,7 @@ function SkillMetaCard({
 }
 
 export const SkillsManager = () => {
+  const developerMode = Boolean(useRuntimeStore((state) => state.snapshot.config?.debug?.developer_mode))
   const [searchParams, setSearchParams] = useSearchParams()
   const scrollContainerRef = useRef<HTMLDivElement | null>(null)
   const [skills, setSkills] = useState<Skill[]>([])
@@ -683,13 +691,34 @@ export const SkillsManager = () => {
                 </div>
                 <div>
                   <label className="mb-3 block text-xs font-semibold uppercase tracking-[0.24em] text-text-muted">Fallback behavior</label>
-                  <input
-                    type="text"
-                    value={newFallbackBehavior}
-                    onChange={(event) => setNewFallbackBehavior(event.target.value)}
-                    placeholder="selected_skill, raw_dictation, system_dictation"
-                    className="w-full rounded-2xl border border-white/8 bg-black/30 px-4 py-3 text-sm text-text-primary outline-none placeholder:text-text-muted focus:border-accent-primary/30 focus:ring-2 focus:ring-accent-primary/20"
-                  />
+                  <select
+                    value={STANDARD_FALLBACK_OPTIONS.some((option) => option.value === newFallbackBehavior) ? newFallbackBehavior : '__custom__'}
+                    onChange={(event) => {
+                      if (event.target.value === '__custom__') return
+                      setNewFallbackBehavior(event.target.value)
+                    }}
+                    className="w-full rounded-2xl border border-white/8 bg-black/30 px-4 py-3 text-sm text-text-primary outline-none focus:border-accent-primary/30 focus:ring-2 focus:ring-accent-primary/20"
+                  >
+                    {STANDARD_FALLBACK_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                    {!STANDARD_FALLBACK_OPTIONS.some((option) => option.value === newFallbackBehavior) ? (
+                      <option value="__custom__">Custom advanced value</option>
+                    ) : null}
+                  </select>
+                  {developerMode ? (
+                    <input
+                      type="text"
+                      value={newFallbackBehavior}
+                      onChange={(event) => setNewFallbackBehavior(event.target.value)}
+                      placeholder="selected_skill, raw_dictation, system_dictation"
+                      className="mt-3 w-full rounded-2xl border border-white/8 bg-black/30 px-4 py-3 text-sm text-text-primary outline-none placeholder:text-text-muted focus:border-accent-primary/30 focus:ring-2 focus:ring-accent-primary/20"
+                    />
+                  ) : !STANDARD_FALLBACK_OPTIONS.some((option) => option.value === newFallbackBehavior) ? (
+                    <p className="mt-3 text-sm leading-6 text-text-secondary">
+                      This template uses a custom fallback value. Turn on Developer mode in Settings to edit the raw contract directly.
+                    </p>
+                  ) : null}
                 </div>
                     </div>
                   </motion.div>

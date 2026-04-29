@@ -8,12 +8,6 @@ from typing import Any, Callable, Dict, Literal, Optional
 from action_execution import ActionResolutionError, ReviewedActionBuilder
 from action_routing import ExternalTextSource, resolve_external_text
 from agent.computer_use_planner import ComputerUsePlanner, detect_computer_use_trigger
-from agent.local_smart_profile import (
-    LOCAL_SMART_PROFILE_ID,
-    LOCAL_SMART_PROFILE_LABEL,
-    classify_local_compact_request,
-    extract_inline_source_request,
-)
 from agent.router import (
     LocalIntentRouter,
     apply_deterministic_transform,
@@ -26,6 +20,7 @@ from agent.router import (
     normalize_whitespace,
     spoken_points_to_bullets,
 )
+from agent.source_material import extract_inline_source_request
 from agent.skills.manager import SkillManager
 from agent.skills.models import SkillDefinition
 from agent.smart_models import (
@@ -84,11 +79,6 @@ INLINE_SOURCE_REQUEST_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(polish this)\s+(.+)$", re.IGNORECASE),
     re.compile(r"^(clean this up)\s+(.+)$", re.IGNORECASE),
 )
-DOMAIN_LOCAL_MODEL_SKILL_IDS = {
-    "system_domain_email",
-    "system_domain_structured_note",
-}
-
 
 class SmartModeProcessor:
     def __init__(
@@ -188,61 +178,11 @@ class SmartModeProcessor:
             requested_skill_id=requested_skill.id,
             effective_skill_id=effective_skill.id,
         )
-        local_compact_classification = None
         smart_profile = "default"
         profile_limit_reason: Optional[str] = None
         structured_output_mode = "none"
         structured_output_schema: Optional[str] = None
         structured_output_failure_kind = "none"
-
-        if (
-            self.provider.lower() == "lmstudio"
-            and not raw_fallback
-            and effective_skill.id != "system_local_task"
-            and computer_use_trigger is None
-            and not self._should_bypass_local_compact_profile(
-                requested_skill=requested_skill,
-                effective_skill=effective_skill,
-                domain_skill_id=domain_skill_id,
-            )
-        ):
-            local_compact_classification = classify_local_compact_request(
-                transcript=transcript,
-                context=context,
-                requested_skill=requested_skill,
-                effective_skill=effective_skill,
-                selection_text=selection_text,
-                clipboard_text=clipboard_text,
-            )
-            smart_profile = LOCAL_SMART_PROFILE_ID
-            profile_limit_reason = local_compact_classification.profile_limit_reason
-            if local_compact_classification.response_format is not None:
-                structured_output_mode = "json_schema"
-                structured_output_schema = local_compact_classification.response_schema_name
-            if not local_compact_classification.is_supported:
-                return self._build_local_compact_refusal_result(
-                    transcript=transcript,
-                    context=context,
-                    requested_skill=SkillReference(id=requested_skill.id, name=requested_skill.name),
-                    skill_used=SkillReference(id=effective_skill.id, name=effective_skill.name),
-                    reason=local_compact_classification.reason,
-                    refusal_message=local_compact_classification.refusal_message or "",
-                    profile_limit_reason=local_compact_classification.profile_limit_reason,
-                    stt_latency_ms=stt_latency_ms,
-                    smart_profile=smart_profile,
-                    structured_output_mode=structured_output_mode,
-                    structured_output_schema=structured_output_schema,
-                    requested_skill_source=requested_skill_source,
-                    requested_app_override_id=requested_app_override_id,
-                    requested_app_override_label=requested_app_override_label,
-                    domain_skill_id=domain_skill_id,
-                    note_routing_suppressed=note_routing_suppressed,
-                    suppressed_requested_skill_source=suppressed_requested_skill_source,
-                    suppressed_requested_app_override_id=suppressed_requested_app_override_id,
-                    suppressed_requested_app_override_label=suppressed_requested_app_override_label,
-                    action_route=action_route,
-                    action_resolver=action_resolver,
-                )
 
         decision = self.router.plan(
             transcript,
@@ -253,15 +193,6 @@ class SmartModeProcessor:
             fallback_reason=fallback_reason,
             raw_fallback=raw_fallback,
         )
-        if local_compact_classification is not None:
-            decision = decision.model_copy(update={
-                "intent": local_compact_classification.intent,
-                "lane": local_compact_classification.lane,
-                "confidence": max(decision.confidence, 0.82),
-                "ambiguity": round(1.0 - max(decision.confidence, 0.82), 3),
-                "reason": local_compact_classification.reason,
-                "output_mode": local_compact_classification.output_mode,
-            })
         planner_resolver = "local"
         planner_model_attempted = False
         planner_model_error: Optional[str] = None
@@ -338,14 +269,6 @@ class SmartModeProcessor:
             effective_context["command_format_contract"] = format_contract
         if code_format_hint:
             effective_context["code_format_hint"] = code_format_hint
-        if local_compact_classification is not None:
-            effective_context["smart_profile"] = LOCAL_SMART_PROFILE_ID
-            effective_context["smart_profile_label"] = LOCAL_SMART_PROFILE_LABEL
-            effective_context["local_compact_contract_id"] = local_compact_classification.contract_id
-            effective_context["local_compact_streaming_allowed"] = local_compact_classification.streaming_allowed
-            if local_compact_classification.response_format is not None:
-                effective_context["local_compact_response_format"] = local_compact_classification.response_format
-                effective_context["local_compact_response_schema_name"] = local_compact_classification.response_schema_name
 
         if force_external_context and external_text.source != ExternalTextSource.NONE and decision.lane.value != "llm":
             decision = decision.model_copy(update={
@@ -766,76 +689,6 @@ class SmartModeProcessor:
             telemetry=telemetry,
         )
 
-    def _build_local_compact_refusal_result(
-        self,
-        *,
-        transcript: str,
-        context: Dict[str, Any],
-        requested_skill: SkillReference,
-        skill_used: SkillReference,
-        reason: str,
-        refusal_message: str,
-        profile_limit_reason: Optional[str],
-        stt_latency_ms: Optional[int],
-        smart_profile: str,
-        structured_output_mode: str,
-        structured_output_schema: Optional[str],
-        requested_skill_source: str,
-        requested_app_override_id: Optional[str],
-        requested_app_override_label: Optional[str],
-        domain_skill_id: Optional[str],
-        note_routing_suppressed: bool,
-        suppressed_requested_skill_source: Optional[str],
-        suppressed_requested_app_override_id: Optional[str],
-        suppressed_requested_app_override_label: Optional[str],
-        action_route: str,
-        action_resolver: str,
-    ) -> SmartModeResult:
-        telemetry = SmartRunTelemetry(
-            intent=SmartIntent.LOCAL_UNSUPPORTED,
-            lane=SmartLane.REFUSED,
-            confidence=0.98,
-            ambiguity=0.02,
-            reason=reason,
-            requested_skill=requested_skill,
-            skill_used=skill_used,
-            requested_skill_source=requested_skill_source,
-            requested_app_override_id=requested_app_override_id,
-            requested_app_override_label=requested_app_override_label,
-            domain_skill_id=domain_skill_id,
-            note_routing_suppressed=note_routing_suppressed,
-            suppressed_requested_skill_source=suppressed_requested_skill_source,
-            suppressed_requested_app_override_id=suppressed_requested_app_override_id,
-            suppressed_requested_app_override_label=suppressed_requested_app_override_label,
-            output_mode="plain_text",
-            smart_profile=smart_profile,  # type: ignore[arg-type]
-            profile_limit_reason=profile_limit_reason,
-            structured_output_mode=structured_output_mode,  # type: ignore[arg-type]
-            structured_output_schema=structured_output_schema,
-            structured_output_failure_kind="none",
-            surface_kind=context.get("surface_kind"),
-            transcript_chars=len(transcript),
-            output_chars=0,
-            context_quality=context.get("context_quality", "empty"),
-            target_type=context.get("target_type"),
-            action_route=action_route,  # type: ignore[arg-type]
-            action_resolver=action_resolver,  # type: ignore[arg-type]
-            stt_latency_ms=stt_latency_ms,
-            planner_latency_ms=0,
-            total_latency_ms=stt_latency_ms or 0,
-        )
-        return SmartModeResult(
-            intent=SmartIntent.LOCAL_UNSUPPORTED,
-            lane=SmartLane.REFUSED,
-            confidence=0.98,
-            ambiguity=0.02,
-            final_text="",
-            requested_skill=requested_skill,
-            skill_used=skill_used,
-            refusal_message=refusal_message,
-            telemetry=telemetry,
-        )
-
     def _is_low_signal_text(self, text: str) -> bool:
         stripped = text.strip()
         if not stripped:
@@ -995,19 +848,6 @@ class SmartModeProcessor:
         if self.provider.lower() == "lmstudio":
             return False
         return should_use_smart_router_model(decision, mode="smart_transform")
-
-    def _should_bypass_local_compact_profile(
-        self,
-        *,
-        requested_skill: SkillDefinition,
-        effective_skill: SkillDefinition,
-        domain_skill_id: Optional[str],
-    ) -> bool:
-        if requested_skill.id in DOMAIN_LOCAL_MODEL_SKILL_IDS:
-            return True
-        if effective_skill.id in DOMAIN_LOCAL_MODEL_SKILL_IDS:
-            return True
-        return bool(domain_skill_id and domain_skill_id in DOMAIN_LOCAL_MODEL_SKILL_IDS)
 
     def _build_multi_step_local_task_request(
         self,

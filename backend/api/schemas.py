@@ -6,6 +6,10 @@ from pydantic import BaseModel, Field
 from local_task_shell.models import LocalTaskStep, TaskRetryMode
 
 
+MAX_AUDIO_BASE64_CHARS = 14_000_000
+MAX_LIVE_CHUNK_BASE64_CHARS = 256_000
+
+
 class APIKeyPayload(BaseModel):
     provider: str
     key: str
@@ -35,7 +39,7 @@ class CaptureStatsPayload(BaseModel):
 
 
 class ProcessAudioPayload(BaseModel):
-    audio_base64: str
+    audio_base64: str = Field(max_length=MAX_AUDIO_BASE64_CHARS)
     mode: str = "dictation"
     context: Optional[SmartContextPayload] = None
     context_warning: Optional[str] = None
@@ -52,7 +56,7 @@ class ProcessAudioPayload(BaseModel):
 
 
 class TestAudioPayload(BaseModel):
-    audio_base64: str
+    audio_base64: str = Field(max_length=MAX_AUDIO_BASE64_CHARS)
     capture_stats: Optional[CaptureStatsPayload] = None
 
 
@@ -100,7 +104,7 @@ class LiveTranscriptionStartPayload(BaseModel):
 
 class LiveTranscriptionChunkPayload(BaseModel):
     session_id: str
-    pcm_s16le_base64: str
+    pcm_s16le_base64: str = Field(max_length=MAX_LIVE_CHUNK_BASE64_CHARS)
     sample_rate: int = 16000
 
 

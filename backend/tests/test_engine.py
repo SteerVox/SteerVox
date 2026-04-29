@@ -75,8 +75,8 @@ def test_rewrite_transcript_updates_smart_preview_runtime_state(monkeypatch):
         "text": "Please ship this once QA has approved it.",
         "final_text": "Please ship this once QA has approved it.",
         "error": None,
-        "smart_profile": "local_compact",
-        "smart_profile_label": "Local Smart profile",
+        "smart_profile": "default",
+        "smart_profile_label": None,
         "updated_at": engine.smart_preview["updated_at"],
     }
     assert emitted_events.count("smart_preview") >= 2

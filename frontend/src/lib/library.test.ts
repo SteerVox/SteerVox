@@ -1,128 +1,98 @@
 import { describe, expect, it } from 'vitest'
 
-import type { HistoryItem, InboxNote } from '../types'
+import type { LibraryItem } from '../types'
 import {
-  buildLibraryPreview,
-  createLibraryItems,
   formatLibraryDetailTitle,
   formatLibraryItemLabel,
+  formatLibraryProviderSummary,
   isLibraryCodeItem,
-  matchesLibraryItem,
-  tokenizeLibrarySearch,
+  libraryFilterLabel,
 } from './library'
 
-function buildHistoryItem(overrides: Partial<HistoryItem> = {}): HistoryItem {
+function buildLibraryItem(overrides: Partial<LibraryItem> = {}): LibraryItem {
   return {
-    id: 1,
-    mode: 'smart_transform',
-    transcript: 'make this concise',
-    final_output: 'A concise version of the update.',
+    id: 'history:1',
+    source_type: 'history',
+    source_id: '1',
+    lane: 'smart',
+    title: 'Smart run',
+    label: 'Smart',
+    preview: 'A concise version of the update.',
     created_at: '2026-03-27T12:00:00.000Z',
-    telemetry: {
+    primary_text: 'A concise version of the update.',
+    secondary_text: 'make this concise',
+    metadata: {
+      source_mode: 'smart_transform',
+      source_kind: 'run',
       output_mode: 'plain_text',
-    },
-    context: {
       app_name: 'Slack',
+      bundle_id: null,
       window_title: 'eng-updates',
+      page_title: null,
+      url_host: null,
+      url_path: null,
+      surface_kind: 'chat_input',
+      stt_provider: 'mlx-whisper',
+      stt_model: 'mlx-community/whisper-base-mlx',
+      llm_provider: 'lmstudio',
+      llm_model: 'qwen2.5-0.5b-instruct-mlx',
+      skill_id: 'system_dictation',
+      skill_label: 'Dictation',
+      domain_id: null,
+      intent: null,
+      local_only: false,
+      model_backed: true,
+      transcript_chars: 18,
+      output_chars: 32,
+      duration_ms: null,
+      step_count: null,
+      completed_steps: null,
+      failed_step_id: null,
+      failed_step_title: null,
+      memory_eligible: true,
+      memory_state: 'eligible',
     },
-    stt_provider: 'mlx-whisper',
-    stt_model: 'mlx-community/whisper-base-mlx',
-    llm_provider: 'lmstudio',
-    llm_model: 'qwen2.5-0.5b-instruct-mlx',
-    ...overrides,
-  }
-}
-
-function buildNote(overrides: Partial<InboxNote> = {}): InboxNote {
-  return {
-    id: 'note-1',
-    text: 'Remember to update the shipping tracker before 5 PM.',
-    created_at: '2026-03-27T13:00:00.000Z',
-    app_name: 'Notes',
-    bundle_id: null,
-    window_title: 'Daily handoff',
-    source_mode: 'smart_transform',
-    source_kind: 'selection_text',
-    output_mode: 'plain_text',
     ...overrides,
   }
 }
 
 describe('library helpers', () => {
-  it('builds previews with normalized whitespace and truncation', () => {
-    expect(buildLibraryPreview('  update   docs   today  ')).toBe('update docs today')
-
-    const longText = 'alpha '.repeat(40)
-    expect(buildLibraryPreview(longText)).toMatch(/…$/)
-  })
-
-  it('merges notes and runs into a descending library timeline', () => {
-    const note = buildNote()
-    const history = buildHistoryItem({
-      created_at: '2026-03-27T11:00:00.000Z',
-      context: {
-        app_name: 'Unknown',
-        window_title: '',
+  it('formats note labels with source-kind detail', () => {
+    const note = buildLibraryItem({
+      id: 'note:1',
+      source_type: 'note',
+      source_id: '1',
+      lane: 'smart',
+      title: 'Saved Smart note',
+      label: 'Smart',
+      metadata: {
+        ...buildLibraryItem().metadata,
+        source_kind: 'selection_text',
       },
     })
 
-    const items = createLibraryItems([note], [history])
-
-    expect(items.map((item) => item.kind)).toEqual(['note', 'history'])
-    expect(items[0].app_name).toBe('Notes')
-    expect(items[1].app_name).toBe('Unknown app')
-    expect(items[1].window_title).toBeNull()
+    expect(formatLibraryItemLabel(note)).toBe('Smart • Selection note')
+    expect(formatLibraryDetailTitle(note)).toBe('Saved Smart note')
   })
 
-  it('formats labels and detail titles using Smart naming', () => {
-    const noteItem = createLibraryItems(
-      [buildNote({ source_kind: 'selection_text' })],
-      [],
-    )[0]
-    const historyItem = createLibraryItems(
-      [],
-      [buildHistoryItem({ telemetry: { output_mode: 'code' } })],
-    )[0]
-
-    expect(formatLibraryItemLabel(noteItem)).toBe('Smart • Selection note')
-    expect(formatLibraryItemLabel(historyItem)).toBe('Smart run')
-    expect(formatLibraryDetailTitle(noteItem)).toBe('Saved note')
-    expect(formatLibraryDetailTitle(historyItem)).toBe('Smart run')
-    expect(isLibraryCodeItem(historyItem)).toBe(true)
+  it('formats history items and provider summaries', () => {
+    const item = buildLibraryItem()
+    expect(formatLibraryItemLabel(item)).toBe('Smart run')
+    expect(formatLibraryDetailTitle(item)).toBe('Smart run')
+    expect(formatLibraryProviderSummary(item)).toContain('STT MLX Whisper')
+    expect(formatLibraryProviderSummary(item)).toContain('Smart LM Studio')
   })
 
-  it('labels computer-use history separately from normal Smart runs', () => {
-    const historyItem = createLibraryItems(
-      [],
-      [buildHistoryItem({
-        telemetry: {
-          output_mode: 'plain_text',
-          intent: 'computer_use',
-        },
-      })],
-    )[0]
+  it('detects code output mode and human filter labels', () => {
+    const codeItem = buildLibraryItem({
+      metadata: {
+        ...buildLibraryItem().metadata,
+        output_mode: 'code',
+      },
+    })
 
-    expect(formatLibraryItemLabel(historyItem)).toBe('Computer use run')
-    expect(formatLibraryDetailTitle(historyItem)).toBe('Computer use run')
-  })
-
-  it('filters by tokens and section type', () => {
-    const noteItem = createLibraryItems(
-      [buildNote({ text: 'Call carrier about Bangalore delay.' })],
-      [],
-    )[0]
-    const historyItem = createLibraryItems(
-      [],
-      [buildHistoryItem({ transcript: 'draft customer update', final_output: 'Customer update ready.' })],
-    )[0]
-
-    const noteTokens = tokenizeLibrarySearch('bangalore delay')
-    const historyTokens = tokenizeLibrarySearch('customer update')
-
-    expect(matchesLibraryItem(noteItem, noteTokens, 'all')).toBe(true)
-    expect(matchesLibraryItem(noteItem, historyTokens, 'all')).toBe(false)
-    expect(matchesLibraryItem(noteItem, noteTokens, 'notes')).toBe(true)
-    expect(matchesLibraryItem(noteItem, noteTokens, 'recent_runs')).toBe(false)
-    expect(matchesLibraryItem(historyItem, historyTokens, 'recent_runs')).toBe(true)
+    expect(isLibraryCodeItem(codeItem)).toBe(true)
+    expect(libraryFilterLabel('computer_use')).toBe('Computer Use')
+    expect(libraryFilterLabel('runs')).toBe('Runs')
   })
 })

@@ -34,6 +34,7 @@ RUNTIME_REVISION_KEYS = (
     "writing_tools",
     "usage",
 )
+MAX_UPLOADED_WAV_BYTES = 10 * 1024 * 1024
 
 logger = get_logger()
 
@@ -46,7 +47,7 @@ class BackendAppState:
     domain_memory_store: DomainMemoryStore = field(default_factory=DomainMemoryStore)
     writing_tools_store: WritingToolsStore = field(default_factory=WritingToolsStore)
     memory_store: LocalMemoryStore = field(default_factory=LocalMemoryStore)
-    inbox_store: InboxStore = field(default_factory=InboxStore)
+    inbox_store: InboxStore = field(init=False)
     runtime_revisions: dict[str, int] = field(
         default_factory=lambda: {key: 0 for key in RUNTIME_REVISION_KEYS}
     )
@@ -55,6 +56,7 @@ class BackendAppState:
     runtime_event_broker: RuntimeEventBroker = field(init=False)
 
     def __post_init__(self) -> None:
+        self.inbox_store = InboxStore(self.writing_tools_store)
         self.runtime_event_broker = RuntimeEventBroker(self.build_runtime_snapshot)
         self.engine = self._build_engine()
         self.live_transcription_manager = LiveTranscriptionManager(
@@ -67,6 +69,7 @@ class BackendAppState:
             domain_memory_store=self.domain_memory_store,
             writing_tools_store=self.writing_tools_store,
             memory_store=self.memory_store,
+            inbox_store=self.inbox_store,
             runtime_event_emitter=self.emit_runtime_event,
         )
 
@@ -82,6 +85,15 @@ class BackendAppState:
         self.engine.shutdown()
         self.engine = self._build_engine()
         return self.engine
+
+    def rebuild_library_memory(self, *, reset_tombstones: bool = False):
+        config = self.config_manager.get_config()
+        if not getattr(config, "memory", None) or not config.memory.auto_learn_from_history:
+            return self.memory_store.list_memories()
+        return self.memory_store.rebuild_from_library(
+            self.writing_tools_store.list_library_memory_sources(),
+            reset_tombstones=reset_tombstones,
+        )
 
     def bump_runtime_revision(self, scope: str) -> int:
         self.runtime_revisions[scope] = self.runtime_revisions.get(scope, 0) + 1
@@ -319,6 +331,8 @@ class BackendAppState:
 
         if not audio_bytes:
             raise ValueError("Uploaded audio was empty.")
+        if len(audio_bytes) > MAX_UPLOADED_WAV_BYTES:
+            raise ValueError("Uploaded audio is too large.")
 
         with tempfile.NamedTemporaryFile(
             suffix=".wav",

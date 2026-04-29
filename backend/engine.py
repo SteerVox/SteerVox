@@ -59,6 +59,7 @@ class SteerVoxEngine:
         domain_memory_store: Optional[DomainMemoryStore] = None,
         writing_tools_store: Optional[WritingToolsStore] = None,
         memory_store: Optional[LocalMemoryStore] = None,
+        inbox_store: Optional[InboxStore] = None,
         runtime_event_emitter: Optional[Callable[[str, Optional[dict[str, Any]]], None]] = None,
     ):
         self.config_manager = ConfigManager()
@@ -82,10 +83,10 @@ class SteerVoxEngine:
             ),
         )
         self.action_router = LocalActionRouter()
-        self.inbox_store = InboxStore()
         self.usage_stats_store = usage_stats_store or UsageStatsStore()
         self.domain_memory_store = domain_memory_store or DomainMemoryStore()
         self.writing_tools_store = writing_tools_store or WritingToolsStore()
+        self.inbox_store = inbox_store or InboxStore(self.writing_tools_store)
         self.memory_store = memory_store or LocalMemoryStore()
         self.vision_agent = VisionAgent()
 
@@ -441,6 +442,7 @@ class SteerVoxEngine:
                         output_mode="code",
                     )
                 )
+                self._refresh_local_memory()
                 saved_to_inbox = True
                 self._emit_runtime_event("inbox_invalidated")
         except Exception as exc:
@@ -557,12 +559,12 @@ class SteerVoxEngine:
             if history_item is not None:
                 self.memory_store.learn_from_history_item(history_item)
             else:
-                self.memory_store.rebuild_from_history(
-                    self.writing_tools_store.list_history(limit=500),
+                self.memory_store.rebuild_from_library(
+                    self.writing_tools_store.list_library_memory_sources(),
                     reset_tombstones=False,
                 )
         except Exception as exc:
-            logger.warning("[Engine] Failed to refresh local memory from history: %s", exc)
+            logger.warning("[Engine] Failed to refresh local memory from library: %s", exc)
 
     def _complete_with_notification(self, *, title: str, body: Optional[str]) -> None:
         self.pending_notification = {
@@ -869,13 +871,8 @@ class SteerVoxEngine:
                 domain_llm_override["model"],
             )
         preview_run_id = str(uuid4())
-        preview_provider = str(
-            getattr(run_processor, "provider", None)
-            or (domain_llm_override or {}).get("provider")
-            or config.llm.provider
-        ).strip().lower()
-        preview_smart_profile = "local_compact" if preview_provider == "lmstudio" else "default"
-        preview_smart_profile_label = "Local Smart profile" if preview_smart_profile == "local_compact" else None
+        preview_smart_profile = "default"
+        preview_smart_profile_label = None
         self._emit_smart_preview(
             run_id=preview_run_id,
             state="started",
@@ -961,7 +958,7 @@ class SteerVoxEngine:
                 smart_profile=preview_smart_profile,
                 smart_profile_label=preview_smart_profile_label,
             )
-            logger.warning("[Engine] Smart processor refused the request under the local compact profile: %s", result.refusal_message)
+            logger.warning("[Engine] Smart processor refused the request: %s", result.refusal_message)
             return result
 
         if not result.final_text:
@@ -1449,8 +1446,7 @@ class SteerVoxEngine:
                     return
                 if smart_result.refusal_message:
                     logger.warning(
-                        "[Engine] Smart request refused under profile=%s reason=%s",
-                        (self.last_smart_run or {}).get("smart_profile"),
+                        "[Engine] Smart request refused reason=%s",
                         smart_result.refusal_message,
                     )
                     self._complete_transient_smart_error(smart_result.refusal_message)
@@ -1761,6 +1757,7 @@ class SteerVoxEngine:
             output_mode=output_mode,
         )
         self.inbox_store.append_note(note)
+        self._refresh_local_memory()
         self.pending_notification = {
             "title": "Saved to Inbox",
             "body": None,

@@ -16,6 +16,7 @@ from automation.applescript import escape_applescript_string, run_applescript_li
 from automation.reviewed_actions import execute_reviewed_applescript, validate_reviewed_applescript
 from app_catalog import AppCatalog, InstalledAppRecord, normalize_app_match_text
 from config.manager import ConfigManager
+from imperative_phrases import normalize_imperative_phrase
 from local_task_shell.models import LocalTaskStep
 from providers.llm_factory import LLMFactory
 from system_control import SystemControlError, SystemControlService
@@ -87,7 +88,7 @@ UI_AUTOMATION_ACTION_TYPES = {
     "focus_primary_chat_input",
     "press_primary_chat_send",
 }
-OPEN_APP_VERBS = ("open", "launch", "switch to", "bring up", "focus on", "focus")
+OPEN_APP_VERBS = ("switch to", "bring up", "focus on", "open up", "launch", "focus", "open")
 URL_VERBS = ("open", "go to", "visit", "navigate to")
 FIELD_NOUNS = (
     "chat input box",
@@ -170,7 +171,7 @@ SPOKEN_URL_PATTERN = re.compile(
     re.IGNORECASE,
 )
 OPEN_APP_PATTERN = re.compile(
-    r"\b(?:open|launch|switch to|bring up|focus(?: on)?)\s+([A-Za-z0-9][A-Za-z0-9 .&+'/-]{1,60})$",
+    r"\b(?:open(?: up)?|launch|switch to|bring up|focus(?: on)?)\s+([A-Za-z0-9][A-Za-z0-9 .&+'/-]{1,60})$",
     re.IGNORECASE,
 )
 MAIL_RECIPIENT_PATTERN = re.compile(
@@ -536,7 +537,7 @@ class ReviewedActionBuilder:
         return None
 
     def _build_local_plan(self, transcript: str, context: dict[str, Any]) -> Optional[ActionPlan]:
-        normalized = " ".join((transcript or "").split()).strip()
+        normalized = normalize_imperative_phrase(transcript)
         if not normalized:
             return None
 
@@ -1357,7 +1358,7 @@ Candidates:
         return alias_values
 
     def _extract_app_verb(self, transcript: str) -> str:
-        lowered = transcript.lower().strip()
+        lowered = normalize_imperative_phrase(transcript).lower()
         for verb in sorted(OPEN_APP_VERBS, key=len, reverse=True):
             if lowered.startswith(verb):
                 return verb
@@ -1863,6 +1864,7 @@ def _clean_target_phrase(value: str) -> str:
 
 def _clean_app_query(value: str) -> str:
     cleaned = str(value or "").strip().strip(".,")
+    cleaned = normalize_imperative_phrase(cleaned)
     cleaned = TRAILING_APP_CLAUSE_PATTERN.sub("", cleaned).strip()
     while True:
         next_cleaned = LEADING_APP_FILLER_PATTERN.sub("", cleaned).strip()

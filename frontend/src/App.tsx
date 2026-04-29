@@ -1,18 +1,19 @@
-import { useEffect, useState } from 'react'
+import { Suspense, lazy, useEffect, useState } from 'react'
 import { HashRouter, NavLink, Navigate, Route, Routes } from 'react-router-dom'
 
 import { DISPLAY_NAME, TAGLINE } from '../shared/branding'
-import CaptureHost from './CaptureHost'
 import { FloatingWidget } from './FloatingWidget'
-import InboxPopover from './InboxPopover'
-import AboutWindow from './AboutWindow'
 import { WindowErrorBoundary } from './components/WindowErrorBoundary'
 import { HomeIcon, InboxIcon, SetupIcon, SkillsIcon, WindowCloseIcon, WindowMinimizeIcon, BrandMark } from './components/BrandIcons'
-import { HomeView } from './HomeView'
-import { LibraryView } from './LibraryView'
-import { SettingsView } from './SettingsView'
-import { SkillsManager } from './SkillsManager'
 import { APP_ROUTES } from './lib/routes'
+
+const CaptureHost = lazy(() => import('./CaptureHost'))
+const InboxPopover = lazy(() => import('./InboxPopover'))
+const AboutWindow = lazy(() => import('./AboutWindow'))
+const HomeView = lazy(async () => ({ default: (await import('./HomeView')).HomeView }))
+const LibraryView = lazy(async () => ({ default: (await import('./LibraryView')).LibraryView }))
+const SettingsView = lazy(async () => ({ default: (await import('./SettingsView')).SettingsView }))
+const SkillsManager = lazy(async () => ({ default: (await import('./SkillsManager')).SkillsManager }))
 
 const MAIN_NAV_ITEMS = [
   { to: APP_ROUTES.home, label: 'Home', icon: <HomeIcon size={16} />, end: true },
@@ -20,6 +21,16 @@ const MAIN_NAV_ITEMS = [
   { to: APP_ROUTES.templates, label: 'Templates', icon: <SkillsIcon size={16} />, end: false },
   { to: APP_ROUTES.settings, label: 'Settings', icon: <SetupIcon size={16} />, end: false },
 ] as const
+
+function RouteFallback() {
+  return (
+    <div className="flex h-full items-center justify-center px-6 py-6">
+      <div className="section-intro-panel rounded-[24px] border border-white/8 px-5 py-4 text-center text-sm leading-6 text-text-secondary">
+        Loading view...
+      </div>
+    </div>
+  )
+}
 
 function RendererErrorReporter() {
   useEffect(() => {
@@ -147,15 +158,17 @@ function AppShell() {
       </div>
 
       <div className="min-h-0 flex-1 overflow-hidden">
-        <Routes>
-          <Route path={APP_ROUTES.home} element={<HomeView />} />
-          <Route path="/home" element={<Navigate to="/" replace />} />
-          <Route path={APP_ROUTES.library} element={<LibraryView />} />
-          <Route path={APP_ROUTES.templates} element={<SkillsManager />} />
-          <Route path="/skills" element={<Navigate to={APP_ROUTES.templates} replace />} />
-          <Route path={APP_ROUTES.settings} element={<SettingsView />} />
-          <Route path="*" element={<Navigate to={APP_ROUTES.home} replace />} />
-        </Routes>
+        <Suspense fallback={<RouteFallback />}>
+          <Routes>
+            <Route path={APP_ROUTES.home} element={<HomeView />} />
+            <Route path="/home" element={<Navigate to="/" replace />} />
+            <Route path={APP_ROUTES.library} element={<LibraryView />} />
+            <Route path={APP_ROUTES.templates} element={<SkillsManager />} />
+            <Route path="/skills" element={<Navigate to={APP_ROUTES.templates} replace />} />
+            <Route path={APP_ROUTES.settings} element={<SettingsView />} />
+            <Route path="*" element={<Navigate to={APP_ROUTES.home} replace />} />
+          </Routes>
+        </Suspense>
       </div>
     </div>
   )
@@ -171,13 +184,15 @@ function App() {
           v7_relativeSplatPath: true,
         }}
       >
-        <Routes>
-          <Route path="/widget" element={<FloatingWidget />} />
-          <Route path="/capture" element={<CaptureHost />} />
-          <Route path="/inbox" element={<InboxPopover />} />
-          <Route path="/about" element={<AboutWindow />} />
-          <Route path="/*" element={<AppShell />} />
-        </Routes>
+        <Suspense fallback={<RouteFallback />}>
+          <Routes>
+            <Route path="/widget" element={<FloatingWidget />} />
+            <Route path="/capture" element={<CaptureHost />} />
+            <Route path="/inbox" element={<InboxPopover />} />
+            <Route path="/about" element={<AboutWindow />} />
+            <Route path="/*" element={<AppShell />} />
+          </Routes>
+        </Suspense>
       </HashRouter>
     </WindowErrorBoundary>
   )

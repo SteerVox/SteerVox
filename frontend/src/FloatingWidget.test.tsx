@@ -56,6 +56,7 @@ vi.mock('./lib/runtimeSelectors', () => ({
   }),
   selectOnboardingState: () => ({
     dictationReady: true,
+    rewriteReady: true,
     completed: true,
   }),
   selectPrimaryAttentionIssue: () => null,
@@ -359,7 +360,7 @@ describe('FloatingWidget smart preview', () => {
     expect(screen.getByTestId('widget-domain-status')).toHaveTextContent('Shipping')
     expect(screen.getByTestId('widget-domain-source')).toHaveTextContent('Pinned')
     expect(screen.getByTestId('widget-domain-mode-control')).toHaveTextContent('Domain mode')
-    expect(screen.getByTestId('widget-mode-control')).toHaveTextContent('Template')
+    expect(screen.getByTestId('widget-mode-control')).toHaveTextContent('Mode')
     expect(screen.getByTestId('widget-secondary-controls')).toHaveClass('grid-cols-3')
   })
 
@@ -382,7 +383,7 @@ describe('FloatingWidget smart preview', () => {
       expect(screen.getByTestId('widget-idle-layout')).toBeInTheDocument()
     })
 
-    expect(screen.getByTestId('widget-mode-control')).toHaveTextContent('Template')
+    expect(screen.getByTestId('widget-mode-control')).toHaveTextContent('Mode')
     expect(screen.getByTestId('widget-mode-control')).toHaveTextContent('Professional Rewrite')
   })
 
@@ -411,7 +412,7 @@ describe('FloatingWidget smart preview', () => {
       expect(screen.getByTestId('widget-idle-layout')).toBeInTheDocument()
     })
 
-    expect(screen.getByTestId('widget-mode-control')).toHaveTextContent('Template')
+    expect(screen.getByTestId('widget-mode-control')).toHaveTextContent('Mode')
     expect(screen.getByTestId('widget-mode-control')).toHaveTextContent('Professional Rewrite')
     expect(screen.getByRole('option', { name: 'Computer Use' })).toBeInTheDocument()
     expect(screen.queryByText('Internal Hidden Skill')).toBeNull()

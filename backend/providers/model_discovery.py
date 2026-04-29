@@ -3,6 +3,7 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 import requests
+from config.models import DEFAULT_LMSTUDIO_MODEL_ID
 from security.secrets_manager import SecretsManager
 from utils.logger import get_logger
 
@@ -26,9 +27,9 @@ DEFAULT_MODELS = {
             {"id": "qwen/qwen3-32b", "name": "Qwen3 32B"},
         ],
         "nvidia": [
+            {"id": "minimaxai/minimax-m2.7", "name": "MiniMax M2.7"},
             {"id": "moonshotai/kimi-k2-instruct-0905", "name": "Kimi K2 Instruct 0905"},
             {"id": "moonshotai/kimi-k2-instruct", "name": "Kimi K2 Instruct"},
-            {"id": "qwen/qwen3-coder-480b-a35b-instruct", "name": "Qwen3 Coder 480B Instruct"},
         ],
         "openai": [
             {"id": "gpt-4o", "name": "GPT-4o"},
@@ -53,7 +54,15 @@ DEFAULT_MODELS = {
             {"id": "sarvam-m", "name": "Sarvam-M (Legacy)"},
         ],
         "lmstudio": [
-            {"id": "local-model", "name": "Local model (LM Studio)"},
+            {
+                "id": DEFAULT_LMSTUDIO_MODEL_ID,
+                "name": "Gemma 4 E4B",
+                "loaded": False,
+                "vision": True,
+                "smart_capable": True,
+                "recommended_for_smart": True,
+                "discovered": False,
+            },
         ],
     },
     "stt": {
@@ -83,7 +92,15 @@ DEFAULT_MODELS = {
         ],
     },
     "vision": {
-        "lmstudio": [],
+        "lmstudio": [
+            {
+                "id": DEFAULT_LMSTUDIO_MODEL_ID,
+                "name": "Gemma 4 E4B",
+                "loaded": False,
+                "vision": True,
+                "discovered": False,
+            },
+        ],
     },
 }
 
@@ -136,6 +153,12 @@ LMSTUDIO_SMART_NAME_PATTERNS = (
     "command-r",
     "gpt-oss",
     "deepseek",
+)
+LMSTUDIO_PREFERRED_SMART_NAME_PATTERNS = (
+    "google/gemma-4-e4b",
+    "gemma-4-e4b",
+    "gemma 4 e4b",
+    "gemma4e4b",
 )
 LMSTUDIO_PARAMETER_COUNT_PATTERN = re.compile(r"(?<!\d)(\d+(?:\.\d+)?)b\b", re.IGNORECASE)
 LMSTUDIO_SMALL_MODEL_PATTERN = re.compile(r"(?<!\d)(0?\.\d+|[1-4])b\b", re.IGNORECASE)
@@ -233,6 +256,7 @@ class ModelDiscovery:
         if provider == "lmstudio":
             smart_capabilities = ModelDiscovery._lmstudio_smart_capabilities(model)
             formatted.update(smart_capabilities)
+            formatted["discovered"] = True
         return formatted
 
     @staticmethod
@@ -317,6 +341,15 @@ class ModelDiscovery:
         return any(marker in searchable for marker in LMSTUDIO_SMART_NAME_PATTERNS)
 
     @staticmethod
+    def _looks_like_preferred_smart_lmstudio_model(model: dict) -> bool:
+        searchable = ModelDiscovery._lmstudio_model_searchable_text(model)
+        collapsed_searchable = ModelDiscovery._normalize_search_text(searchable)
+        return any(
+            marker in searchable or ModelDiscovery._normalize_search_text(marker) in collapsed_searchable
+            for marker in LMSTUDIO_PREFERRED_SMART_NAME_PATTERNS
+        )
+
+    @staticmethod
     def _lmstudio_max_context_length(model: dict) -> Optional[int]:
         raw_value = model.get("maxContextLength") or model.get("max_context_length")
         if raw_value is None:
@@ -355,10 +388,13 @@ class ModelDiscovery:
         tool_use = ModelDiscovery._lmstudio_model_supports_tool_use(model)
         reasoning = ModelDiscovery._lmstudio_model_supports_reasoning(model)
         looks_smart = ModelDiscovery._looks_like_smart_lmstudio_model(model)
+        preferred_for_smart = ModelDiscovery._looks_like_preferred_smart_lmstudio_model(model)
         max_context_length = ModelDiscovery._lmstudio_max_context_length(model)
         small_model = ModelDiscovery._looks_like_small_lmstudio_model(model)
-        smart_capable = not vision and (tool_use or reasoning or looks_smart)
-        recommended_for_smart = smart_capable and loaded and (tool_use or reasoning or not small_model)
+        smart_capable = tool_use or reasoning or looks_smart or preferred_for_smart
+        recommended_for_smart = smart_capable and (preferred_for_smart or loaded) and (
+            tool_use or reasoning or preferred_for_smart or not small_model
+        )
         return {
             "loaded": loaded,
             "vision": vision,

@@ -6,22 +6,18 @@ import { InboxIcon } from './components/BrandIcons'
 import { apiDelete, apiGet, apiPost } from './lib/api'
 import { getErrorMessage, isAbortError } from './lib/errors'
 import {
-  createLibraryItems,
   formatLibraryDetailTitle,
   formatLibraryItemLabel,
+  formatLibraryLaneLabel,
+  formatLibraryProviderSummary,
   formatLibraryTimestamp,
   isLibraryCodeItem,
-  matchesLibraryItem,
-  tokenizeLibrarySearch,
 } from './lib/library'
 import { getHistoryItemRerunNotice, isHistoryItemRerunnable } from './lib/historyRuns'
 import { createLatestRequestController, responseData, retryRead, runSafeAction, settleRecord, withSignal } from './lib/runtime'
 import { useRuntimeStore } from './lib/runtimeStore'
-import type { HistoryItem, InboxNote, LibraryFilter, LibraryItem, SectionLoadState, Skill } from './types'
+import type { HistoryItem, LibraryFilter, LibraryItem, SectionLoadState, Skill } from './types'
 
-type InboxResponse = {
-  notes: InboxNote[]
-}
 const INITIAL_SECTION_STATE: SectionLoadState = {
   status: 'idle',
   error: null,
@@ -29,21 +25,55 @@ const INITIAL_SECTION_STATE: SectionLoadState = {
   updatedAt: null,
 }
 
+const FILTER_BUTTONS: ReadonlyArray<{ value: LibraryFilter; label: string }> = [
+  { value: 'all', label: 'All' },
+  { value: 'notes', label: 'Notes' },
+  { value: 'runs', label: 'Recent runs' },
+]
+
 function parseFilter(value: string | null): LibraryFilter {
-  if (value === 'notes' || value === 'recent_runs') return value
+  if (value === 'notes' || value === 'runs' || value === 'smart' || value === 'dictate' || value === 'local_task' || value === 'computer_use') {
+    return value
+  }
   return 'all'
 }
 
 function itemKey(item: LibraryItem) {
-  return `${item.kind}:${item.id}`
+  return item.id
 }
 
-function formatRunProviders(item: HistoryItem) {
-  const stt = `${item.stt_provider || 'unknown'} • ${item.stt_model || 'unknown'}`
-  if (item.telemetry.intent === 'computer_use') return `Computer use • ${item.llm_provider || 'no LLM'}`
-  if (item.mode === 'local_task') return `Local task • ${item.llm_provider || 'no LLM'}`
-  if (item.mode !== 'smart_transform') return `STT ${stt}`
-  return `${stt} • LLM ${item.llm_provider || 'unknown'} • ${item.llm_model || 'unknown'}`
+function formatLibrarySourceLabel(item: LibraryItem) {
+  return item.metadata.url_host || item.metadata.app_name || 'Unknown App'
+}
+
+function formatRunProviders(item: LibraryItem) {
+  const parts = [formatLibraryProviderSummary(item)]
+  if (item.metadata.local_only) {
+    parts.push('Local only')
+  }
+  return parts.filter(Boolean).join(' • ')
+}
+
+function formatOutputTitle(item: LibraryItem, historyItem: HistoryItem | null) {
+  if (!historyItem) {
+    return item.source_type === 'history' ? 'Run output' : 'Saved content'
+  }
+  if (historyItem.telemetry.intent === 'computer_use') {
+    return 'Computer use output'
+  }
+  if (item.metadata.source_mode === 'smart_transform') {
+    return 'Smart output'
+  }
+  if (item.metadata.source_mode === 'local_task') {
+    return 'Task output'
+  }
+  return 'Dictation output'
+}
+
+function parseHistoryId(item: LibraryItem | null) {
+  if (!item || item.source_type !== 'history') return null
+  const parsed = Number.parseInt(item.source_id, 10)
+  return Number.isFinite(parsed) ? parsed : null
 }
 
 function ActionChip({
@@ -81,34 +111,23 @@ export function LibraryView() {
   const [templateState, setTemplateState] = useState<SectionLoadState>(INITIAL_SECTION_STATE)
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  const [notes, setNotes] = useState<InboxNote[]>([])
+  const [libraryItems, setLibraryItems] = useState<LibraryItem[]>([])
   const [historyItems, setHistoryItems] = useState<HistoryItem[]>([])
   const [templates, setTemplates] = useState<Skill[]>([])
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [searchQuery, setSearchQuery] = useState('')
   const [historyTemplateSelections, setHistoryTemplateSelections] = useState<Record<number, string>>({})
   const [busyAction, setBusyAction] = useState<string | null>(null)
-  const lastLoadAtRef = useRef(0)
   const requestsRef = useRef(createLatestRequestController())
-  const notesRef = useRef<InboxNote[]>([])
-  const historyRef = useRef<HistoryItem[]>([])
-  const templatesRef = useRef<Skill[]>([])
+  const itemsRef = useRef<LibraryItem[]>([])
   const contentStateRef = useRef<SectionLoadState>(INITIAL_SECTION_STATE)
   const templateStateRef = useRef<SectionLoadState>(INITIAL_SECTION_STATE)
 
   const activeFilter = parseFilter(searchParams.get('filter'))
 
   useEffect(() => {
-    notesRef.current = notes
-  }, [notes])
-
-  useEffect(() => {
-    historyRef.current = historyItems
-  }, [historyItems])
-
-  useEffect(() => {
-    templatesRef.current = templates
-  }, [templates])
+    itemsRef.current = libraryItems
+  }, [libraryItems])
 
   useEffect(() => {
     contentStateRef.current = contentState
@@ -118,26 +137,28 @@ export function LibraryView() {
     templateStateRef.current = templateState
   }, [templateState])
 
-  const loadData = useCallback(async (force = false) => {
-    const now = Date.now()
-    if (!force && now - lastLoadAtRef.current < 250) return
-    lastLoadAtRef.current = now
+  const loadData = useCallback(async () => {
     const request = requestsRef.current.begin()
-    if (!notesRef.current.length && !historyRef.current.length) {
+    if (!itemsRef.current.length) {
       setContentState((current) => ({ ...current, status: 'loading', error: null }))
     }
-    if (!templatesRef.current.length) {
+    if (!templates.length) {
       setTemplateState((current) => ({ ...current, status: 'loading', error: null }))
     }
+
+    const params = new URLSearchParams()
+    if (activeFilter !== 'all') params.set('filter', activeFilter)
+    if (searchQuery.trim()) params.set('q', searchQuery.trim())
+    params.set('limit', '500')
 
     try {
       const settled = await retryRead(async (signal) => (
         settleRecord<{
-          notes: Promise<InboxResponse>
+          library: Promise<{ items: LibraryItem[] }>
           history: Promise<{ items: HistoryItem[] }>
           skills: Promise<{ skills: Skill[] }>
         }>({
-          notes: apiGet<InboxResponse>('/inbox', withSignal({ timeout: 10000 }, signal)).then(responseData),
+          library: apiGet<{ items: LibraryItem[] }>(`/library?${params.toString()}`, withSignal({ timeout: 10000 }, signal)).then(responseData),
           history: apiGet<{ items: HistoryItem[] }>('/history', withSignal({ timeout: 10000 }, signal)).then(responseData),
           skills: apiGet<{ skills: Skill[] }>('/skills', withSignal({ timeout: 10000 }, signal)).then(responseData),
         })
@@ -145,8 +166,8 @@ export function LibraryView() {
 
       if (!requestsRef.current.isLatest(request.token)) return
 
-      if (settled.notes.status === 'fulfilled') {
-        setNotes(settled.notes.value.notes || [])
+      if (settled.library.status === 'fulfilled') {
+        setLibraryItems(settled.library.value.items || [])
       }
       if (settled.history.status === 'fulfilled') {
         setHistoryItems(settled.history.value.items || [])
@@ -156,8 +177,8 @@ export function LibraryView() {
       }
 
       const contentErrors = [
-        settled.notes.status === 'rejected' ? 'Notes' : null,
-        settled.history.status === 'rejected' ? 'Recent runs' : null,
+        settled.library.status === 'rejected' ? 'Library' : null,
+        settled.history.status === 'rejected' ? 'Run details' : null,
       ].filter(Boolean)
 
       setContentState({
@@ -167,15 +188,15 @@ export function LibraryView() {
         updatedAt: Date.now(),
       })
       setTemplateState({
-        status: settled.skills.status === 'fulfilled' ? 'ready' : templatesRef.current.length ? 'stale' : 'error',
+        status: settled.skills.status === 'fulfilled' ? 'ready' : templates.length ? 'stale' : 'error',
         error: settled.skills.status === 'rejected' ? 'Templates could not refresh. Existing options are still available.' : null,
-        stale: settled.skills.status === 'rejected' && templatesRef.current.length > 0,
+        stale: settled.skills.status === 'rejected' && templates.length > 0,
         updatedAt: settled.skills.status === 'fulfilled' ? Date.now() : templateStateRef.current.updatedAt,
       })
       setError(null)
     } catch (nextError: unknown) {
       if (isAbortError(nextError) || !requestsRef.current.isLatest(request.token)) return
-      const hasLastGoodData = notesRef.current.length > 0 || historyRef.current.length > 0
+      const hasLastGoodData = itemsRef.current.length > 0
       const message = getErrorMessage(nextError, 'Unable to load your Library right now.')
       setContentState({
         status: hasLastGoodData ? 'stale' : 'error',
@@ -185,32 +206,26 @@ export function LibraryView() {
       })
       setError(message)
     }
-  }, [])
+  }, [activeFilter, searchQuery, templates.length])
 
   useEffect(() => {
     const requests = requestsRef.current
     const timer = window.setTimeout(() => {
-      void loadData(true)
-    }, 0)
+      void loadData()
+    }, searchQuery.trim() ? 180 : 0)
     return () => {
       window.clearTimeout(timer)
       requests.cancel()
     }
-  }, [loadData])
+  }, [loadData, searchQuery])
 
   useEffect(() => {
-    if (
-      invalidationTokens.inbox === 0
-      && invalidationTokens.history === 0
-      && invalidationTokens.skills === 0
-    ) {
+    if (invalidationTokens.history === 0 && invalidationTokens.inbox === 0 && invalidationTokens.skills === 0) {
       return
     }
-
     const timer = window.setTimeout(() => {
-      void loadData(true)
+      void loadData()
     }, 0)
-
     return () => {
       window.clearTimeout(timer)
     }
@@ -222,27 +237,31 @@ export function LibraryView() {
     return () => clearTimeout(timer)
   }, [notice])
 
-  const allItems = useMemo(
-    () => createLibraryItems(notes, historyItems),
-    [historyItems, notes],
-  )
-  const searchTokens = useMemo(() => tokenizeLibrarySearch(searchQuery), [searchQuery])
-  const filteredItems = useMemo(
-    () => allItems.filter((item) => matchesLibraryItem(item, searchTokens, activeFilter)),
-    [activeFilter, allItems, searchTokens],
-  )
-  const selectedItem = useMemo(
-    () => {
-      const effectiveKey = selectedKey && filteredItems.some((item) => itemKey(item) === selectedKey)
-        ? selectedKey
-        : filteredItems[0]
-          ? itemKey(filteredItems[0])
-          : null
-      return effectiveKey ? filteredItems.find((item) => itemKey(item) === effectiveKey) ?? null : null
-    },
-    [filteredItems, selectedKey],
-  )
+  const selectedItem = useMemo(() => {
+    const effectiveKey = selectedKey && libraryItems.some((item) => itemKey(item) === selectedKey)
+      ? selectedKey
+      : libraryItems[0]?.id ?? null
+    return effectiveKey ? libraryItems.find((item) => itemKey(item) === effectiveKey) ?? null : null
+  }, [libraryItems, selectedKey])
   const selectedItemKey = selectedItem ? itemKey(selectedItem) : null
+  const historyById = useMemo(
+    () => new Map(historyItems.map((item) => [String(item.id), item])),
+    [historyItems],
+  )
+  const selectedHistoryItem = selectedItem?.source_type === 'history'
+    ? historyById.get(selectedItem.source_id) ?? null
+    : null
+  const selectedHistoryId = parseHistoryId(selectedItem)
+  const selectedHistoryTranscript = selectedItem?.source_type === 'history'
+    ? (selectedHistoryItem?.transcript || selectedItem.secondary_text || selectedItem.primary_text)
+    : ''
+  const selectedHistoryOutput = selectedItem?.source_type === 'history'
+    ? (selectedHistoryItem?.final_output || selectedItem.primary_text)
+    : ''
+  const selectedHistoryIsRerunnable = selectedHistoryId !== null && (
+    selectedHistoryItem ? isHistoryItemRerunnable(selectedHistoryItem) : true
+  )
+  const selectedHistoryRerunNotice = selectedHistoryItem ? getHistoryItemRerunNotice(selectedHistoryItem) : null
   const historyTemplateOptions = useMemo(
     () => templates.filter((template) => template.id !== 'system_dictation'),
     [templates],
@@ -271,7 +290,7 @@ export function LibraryView() {
     const result = await runSafeAction(
       async () => {
         await apiDelete(`/inbox/${noteId}`)
-        await loadData(true)
+        await loadData()
         return true
       },
       {
@@ -284,10 +303,10 @@ export function LibraryView() {
     return Boolean(result)
   }
 
-  const copyAndArchiveNote = async (note: InboxNote) => {
+  const copyAndArchiveNote = async (item: LibraryItem) => {
     try {
-      await copyText(note.text, 'Copied output')
-      const deleted = await deleteNote(note.id)
+      await copyText(item.primary_text, 'Copied output')
+      const deleted = await deleteNote(item.source_id)
       if (!deleted) {
         setError('Copied the note, but could not archive it.')
       }
@@ -301,7 +320,7 @@ export function LibraryView() {
     await runSafeAction(
       async () => {
         await apiPost(`/history/${id}/reprocess`, templateId ? { skill_id: templateId } : {})
-        await loadData(true)
+        await loadData()
       },
       {
         fallbackError: 'Unable to re-run that item right now.',
@@ -317,7 +336,7 @@ export function LibraryView() {
     await runSafeAction(
       async () => {
         await apiDelete(`/history/${id}`)
-        await loadData(true)
+        await loadData()
       },
       {
         fallbackError: 'Unable to delete that run.',
@@ -328,17 +347,19 @@ export function LibraryView() {
     setBusyAction(null)
   }
 
-  const resolveTemplateSelection = (item: HistoryItem) => (
-    historyTemplateSelections[item.id]
-    || item.telemetry.skill_used?.id
+  const resolveTemplateSelection = (historyId: number, item?: HistoryItem | null) => (
+    historyTemplateSelections[historyId]
+    || item?.telemetry.skill_used?.id
     || historyTemplateOptions[0]?.id
     || ''
   )
 
-  const resultLabel = `${filteredItems.length} item${filteredItems.length === 1 ? '' : 's'}`
-  const selectedHistoryItem = selectedItem?.kind === 'history' ? selectedItem.history : null
-  const selectedHistoryIsRerunnable = selectedHistoryItem ? isHistoryItemRerunnable(selectedHistoryItem) : false
-  const selectedHistoryRerunNotice = selectedHistoryItem ? getHistoryItemRerunNotice(selectedHistoryItem) : null
+  const resultLabel = `${libraryItems.length} item${libraryItems.length === 1 ? '' : 's'}`
+  const selectedOutputTitle = selectedItem ? formatOutputTitle(selectedItem, selectedHistoryItem) : 'Saved content'
+  const selectedProviderSummary = selectedItem ? formatRunProviders(selectedItem) : null
+  const selectedStepSummary = selectedItem?.metadata.step_count
+    ? `${selectedItem.metadata.completed_steps || 0}/${selectedItem.metadata.step_count} steps`
+    : null
 
   return (
     <div className="h-full overflow-hidden px-8 py-6">
@@ -352,7 +373,7 @@ export function LibraryView() {
             </p>
           </div>
           <div className="flex items-center gap-2">
-            <ActionChip onClick={() => void loadData(true)}>Refresh</ActionChip>
+            <ActionChip onClick={() => void loadData()}>Refresh</ActionChip>
           </div>
         </div>
 
@@ -401,11 +422,7 @@ export function LibraryView() {
                   />
 
                   <div className="mt-3 flex flex-wrap gap-2">
-                    {([
-                      ['all', 'All'],
-                      ['notes', 'Notes'],
-                      ['recent_runs', 'Recent runs'],
-                    ] as const).map(([value, label]) => {
+                    {FILTER_BUTTONS.map(({ value, label }) => {
                       const active = activeFilter === value
                       return (
                         <button
@@ -427,17 +444,17 @@ export function LibraryView() {
               </div>
 
               <div className="mt-3 min-h-0 flex-1 overflow-y-auto px-1">
-                {contentState.status === 'loading' && !allItems.length ? (
+                {contentState.status === 'loading' && !libraryItems.length ? (
                   <div className="flex h-full items-center justify-center px-4">
                     <BrandedProgressLoader
                       compact
                       title="Loading Library"
-                      subtitle="Merging notes and recent runs."
+                      subtitle="Fetching notes and recent runs."
                     />
                   </div>
-                ) : filteredItems.length ? (
+                ) : libraryItems.length ? (
                   <div className="space-y-2">
-                    {filteredItems.map((item) => {
+                    {libraryItems.map((item) => {
                       const active = itemKey(item) === selectedItemKey
                       return (
                         <button
@@ -451,13 +468,19 @@ export function LibraryView() {
                           }`}
                         >
                           <div className="flex items-center justify-between gap-3">
-                            <div className="truncate text-[10px] uppercase tracking-[0.18em] text-text-muted">{item.app_name}</div>
-                            <div className="shrink-0 text-[10px] uppercase tracking-[0.18em] text-text-muted">{formatLibraryTimestamp(item.created_at)}</div>
+                            <div className="truncate text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                              {formatLibrarySourceLabel(item)}
+                            </div>
+                            <div className="shrink-0 text-[10px] uppercase tracking-[0.18em] text-text-muted">
+                              {formatLibraryTimestamp(item.created_at)}
+                            </div>
                           </div>
                           <div className={`mt-2 text-sm leading-6 text-text-primary ${isLibraryCodeItem(item) ? 'font-mono text-[12px]' : ''}`}>
                             {item.preview}
                           </div>
-                          <div className="mt-2 text-[10px] uppercase tracking-[0.16em] text-text-secondary">{formatLibraryItemLabel(item)}</div>
+                          <div className="mt-2 text-[10px] uppercase tracking-[0.16em] text-text-secondary">
+                            {formatLibraryItemLabel(item)}
+                          </div>
                         </button>
                       )
                     })}
@@ -467,8 +490,10 @@ export function LibraryView() {
                     {searchQuery
                       ? 'No Library items match the current search.'
                       : activeFilter === 'notes'
-                        ? 'Saved notes will show up here after you use Smart with a note phrase.'
-                        : 'Dictation and Smart runs will appear here after the first successful pass.'}
+                        ? 'Saved notes will show up here after you save one from Dictate or Smart.'
+                        : activeFilter === 'runs'
+                          ? 'Runs will appear here after your first successful Dictate, Smart, or local task pass.'
+                          : 'Your Library will populate after the first saved note or run.'}
                   </div>
                 )}
               </div>
@@ -483,85 +508,98 @@ export function LibraryView() {
                         <div className="text-[11px] uppercase tracking-[0.22em] text-text-muted">{formatLibraryDetailTitle(selectedItem)}</div>
                         <div className="mt-2 flex flex-wrap items-center gap-2">
                           <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-text-muted">
-                            {selectedItem.app_name}
+                            {formatLibrarySourceLabel(selectedItem)}
                           </span>
                           <span className="text-[11px] uppercase tracking-[0.16em] text-text-muted">
                             {formatLibraryTimestamp(selectedItem.created_at)}
                           </span>
                           <span className="text-[11px] uppercase tracking-[0.16em] text-text-muted">
-                            {formatLibraryItemLabel(selectedItem)}
+                            {formatLibraryLaneLabel(selectedItem.lane)}
                           </span>
-                          {selectedItem.output_mode ? (
-                            <span className="rounded-full border border-white/8 bg-white/[0.04] px-2.5 py-1 text-[10px] font-medium uppercase tracking-[0.16em] text-text-muted">
-                              {selectedItem.output_mode.replace('_', ' ')}
-                            </span>
-                          ) : null}
                         </div>
-                        {selectedItem.window_title ? (
-                          <div className="mt-3 truncate text-sm text-text-secondary">{selectedItem.window_title}</div>
+                        {selectedItem.metadata.window_title ? (
+                          <div className="mt-3 truncate text-sm text-text-secondary">{selectedItem.metadata.window_title}</div>
+                        ) : selectedItem.metadata.page_title ? (
+                          <div className="mt-3 truncate text-sm text-text-secondary">{selectedItem.metadata.page_title}</div>
                         ) : null}
                       </div>
 
-                      {selectedItem.kind === 'note' ? (
+                      {selectedItem.source_type === 'note' ? (
                         <div className="flex flex-wrap items-center gap-2">
-                          <ActionChip onClick={() => void copyText(selectedItem.note.text, 'Copied output')}>Copy</ActionChip>
-                          <ActionChip onClick={() => void copyAndArchiveNote(selectedItem.note)}>Copy & Archive</ActionChip>
+                          <ActionChip onClick={() => void copyText(selectedItem.primary_text, 'Copied output')}>Copy</ActionChip>
+                          <ActionChip onClick={() => void copyAndArchiveNote(selectedItem)}>Copy & Archive</ActionChip>
                           <ActionChip
                             tone="danger"
-                            disabled={busyAction === `note-delete-${selectedItem.note.id}`}
-                            onClick={() => void deleteNote(selectedItem.note.id)}
+                            disabled={busyAction === `note-delete-${selectedItem.source_id}`}
+                            onClick={() => void deleteNote(selectedItem.source_id)}
                           >
                             Delete
                           </ActionChip>
                         </div>
-                      ) : (
+                      ) : selectedItem.source_type === 'history' ? (
                         <div className="flex flex-wrap items-center gap-2">
-                          <ActionChip onClick={() => void copyText(selectedItem.history.transcript, 'Copied output')}>Use transcript</ActionChip>
-                          <ActionChip onClick={() => void copyText(selectedItem.history.final_output, 'Copied output')}>Copy output</ActionChip>
+                          <ActionChip onClick={() => void copyText(selectedHistoryTranscript, 'Copied transcript')}>Copy transcript</ActionChip>
+                          <ActionChip onClick={() => void copyText(selectedHistoryOutput, 'Copied output')}>Copy output</ActionChip>
                           {selectedHistoryIsRerunnable ? (
                             <ActionChip
-                              disabled={busyAction === `history-${selectedItem.history.id}`}
-                              onClick={() => void rerunHistoryItem(selectedItem.history.id)}
+                              disabled={busyAction === `history-${selectedHistoryId}`}
+                              onClick={() => {
+                                if (selectedHistoryId !== null) {
+                                  void rerunHistoryItem(selectedHistoryId)
+                                }
+                              }}
                             >
-                              {busyAction === `history-${selectedItem.history.id}` ? 'Running…' : 'Re-run'}
+                              {busyAction === `history-${selectedHistoryId}` ? 'Running...' : 'Re-run'}
                             </ActionChip>
                           ) : null}
-                          <ActionChip
-                            tone="danger"
-                            disabled={busyAction === `history-delete-${selectedItem.history.id}`}
-                            onClick={() => void deleteHistoryItem(selectedItem.history.id)}
-                          >
-                            Delete
-                          </ActionChip>
+                          {selectedHistoryId !== null ? (
+                            <ActionChip
+                              tone="danger"
+                              disabled={busyAction === `history-delete-${selectedHistoryId}`}
+                              onClick={() => void deleteHistoryItem(selectedHistoryId)}
+                            >
+                              Delete
+                            </ActionChip>
+                          ) : null}
+                        </div>
+                      ) : (
+                        <div className="flex flex-wrap items-center gap-2">
+                          <ActionChip onClick={() => void copyText(selectedItem.primary_text, 'Copied output')}>Copy output</ActionChip>
                         </div>
                       )}
                     </div>
                   </div>
 
                   <div className="min-h-0 flex-1 overflow-y-auto px-6 py-6">
-                    {selectedItem.kind === 'note' ? (
+                    {selectedItem.source_type === 'note' ? (
                       <div className="glass-card px-5 py-5">
+                        <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">{selectedOutputTitle}</div>
                         {isLibraryCodeItem(selectedItem) ? (
-                          <pre className="overflow-x-auto whitespace-pre-wrap break-words rounded-[20px] border border-white/6 bg-black/22 px-4 py-4 font-mono text-[13px] leading-7 text-text-primary">
-                            <code>{selectedItem.note.text}</code>
+                          <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-[20px] border border-white/6 bg-black/22 px-4 py-4 font-mono text-[13px] leading-7 text-text-primary">
+                            <code>{selectedItem.primary_text}</code>
                           </pre>
                         ) : (
-                          <div className="whitespace-pre-wrap text-[14px] leading-8 text-text-primary">{selectedItem.note.text}</div>
+                          <div className="mt-3 whitespace-pre-wrap text-[14px] leading-8 text-text-primary">{selectedItem.primary_text}</div>
                         )}
+                        {selectedItem.secondary_text ? (
+                          <div className="mt-4 border-t border-white/6 pt-4 text-sm leading-6 text-text-secondary">
+                            {selectedItem.secondary_text}
+                          </div>
+                        ) : null}
                       </div>
                     ) : (
                       <div className="grid gap-5">
                         <div className="rounded-[22px] border border-white/6 bg-white/[0.02] p-4">
-                          {selectedHistoryIsRerunnable ? (
+                          {selectedHistoryId !== null && selectedHistoryIsRerunnable ? (
                             <div className="flex flex-wrap items-end gap-4">
                               <div className="min-w-0 flex-1">
                                 <label className="mb-3 block text-[11px] uppercase tracking-[0.24em] text-text-muted">Run with a different template</label>
                                 <select
                                   className="w-full rounded-2xl border border-white/8 bg-black/30 px-4 py-3 text-sm text-text-primary outline-none focus:border-accent-primary/30 focus:ring-2 focus:ring-accent-primary/20"
-                                  value={resolveTemplateSelection(selectedItem.history)}
+                                  value={resolveTemplateSelection(selectedHistoryId, selectedHistoryItem)}
                                   onChange={(event) => setHistoryTemplateSelections((current) => ({
                                     ...current,
-                                    [selectedItem.history.id]: event.target.value,
+                                    [selectedHistoryId]: event.target.value,
                                   }))}
                                 >
                                   {historyTemplateOptions.map((template) => (
@@ -570,41 +608,41 @@ export function LibraryView() {
                                 </select>
                               </div>
                               <ActionChip
-                                disabled={busyAction === `history-${selectedItem.history.id}` || !resolveTemplateSelection(selectedItem.history)}
-                                onClick={() => void rerunHistoryItem(selectedItem.history.id, resolveTemplateSelection(selectedItem.history))}
+                                disabled={busyAction === `history-${selectedHistoryId}` || !resolveTemplateSelection(selectedHistoryId, selectedHistoryItem)}
+                                onClick={() => void rerunHistoryItem(selectedHistoryId, resolveTemplateSelection(selectedHistoryId, selectedHistoryItem))}
                               >
-                                {busyAction === `history-${selectedItem.history.id}` ? 'Running…' : 'Run with template'}
+                                {busyAction === `history-${selectedHistoryId}` ? 'Running...' : 'Run with template'}
                               </ActionChip>
                             </div>
                           ) : (
                             <div className="rounded-2xl border border-white/8 bg-black/20 px-4 py-3 text-sm leading-6 text-text-secondary">
-                              {selectedHistoryRerunNotice}
+                              {selectedHistoryRerunNotice || 'Run details are available, but this item cannot be re-run from the current context.'}
                             </div>
                           )}
-                          <div className="mt-4 text-sm leading-6 text-text-secondary">{formatRunProviders(selectedItem.history)}</div>
+
+                          <div className="mt-4 grid gap-2 text-sm leading-6 text-text-secondary xl:grid-cols-2">
+                            {selectedProviderSummary ? <div>{selectedProviderSummary}</div> : null}
+                            {selectedStepSummary ? <div>{selectedStepSummary}</div> : null}
+                            {selectedItem.metadata.duration_ms ? <div>{selectedItem.metadata.duration_ms} ms</div> : null}
+                            {selectedItem.metadata.failed_step_title ? <div>Failed step: {selectedItem.metadata.failed_step_title}</div> : null}
+                          </div>
                         </div>
 
                         <div className="grid gap-5 xl:grid-cols-2">
                           <div className="glass-card p-5">
                             <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">Transcript</div>
-                            <pre className="mt-3 whitespace-pre-wrap text-sm leading-7 text-text-primary">{selectedItem.history.transcript}</pre>
+                            <pre className="mt-3 whitespace-pre-wrap text-sm leading-7 text-text-primary">
+                              {selectedHistoryTranscript || 'Transcript details are unavailable for this run.'}
+                            </pre>
                           </div>
-                            <div className="glass-card p-5">
-                              <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">
-                              {selectedItem.history.telemetry.intent === 'computer_use'
-                                ? 'Computer use output'
-                                : selectedItem.source_mode === 'smart_transform'
-                                ? 'Smart output'
-                                : selectedItem.source_mode === 'local_task'
-                                  ? 'Task output'
-                                  : 'Dictation output'}
-                              </div>
+                          <div className="glass-card p-5">
+                            <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">{selectedOutputTitle}</div>
                             {isLibraryCodeItem(selectedItem) ? (
                               <pre className="mt-3 overflow-x-auto whitespace-pre-wrap break-words rounded-[20px] border border-white/6 bg-black/22 px-4 py-4 font-mono text-[13px] leading-7 text-text-primary">
-                                <code>{selectedItem.history.final_output}</code>
+                                <code>{selectedHistoryOutput}</code>
                               </pre>
                             ) : (
-                              <pre className="mt-3 whitespace-pre-wrap text-sm leading-7 text-text-primary">{selectedItem.history.final_output}</pre>
+                              <pre className="mt-3 whitespace-pre-wrap text-sm leading-7 text-text-primary">{selectedHistoryOutput}</pre>
                             )}
                           </div>
                         </div>

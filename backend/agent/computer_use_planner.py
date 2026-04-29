@@ -24,6 +24,7 @@ from local_task_shell.policy import (
     DISALLOWED_EXECUTABLES,
     DISALLOWED_SHELL_OPERATORS,
 )
+from imperative_phrases import normalize_imperative_phrase
 from providers.llm_factory import LLMFactory
 from utils.logger import get_logger
 
@@ -36,7 +37,7 @@ ComputerUsePlanMode = Literal["single_step", "multi_step"]
 ComputerUseStepKind = Literal["desktop_action", "shell_command"]
 
 DESKTOP_ACTION_PATTERN = re.compile(
-    r"^(?:open|launch|switch to|bring up|focus(?: on)?|go to|visit|navigate to|click|press|tap|choose|hit|"
+    r"^(?:open(?: up)?|launch|switch to|bring up|focus(?: on)?|go to|visit|navigate to|click|press|tap|choose|hit|"
     r"play(?:\s*/\s*pause|\s+pause)?|pause|next(?: track| song)?|previous(?: track| song)?|skip(?: track| song)?|"
     r"mute|unmute|volume(?: up| down)?|brightness(?: up| down)?|reload|refresh|go back|go forward)\b",
     re.IGNORECASE,
@@ -149,7 +150,7 @@ def normalize_command_text(text: str) -> str:
 
 
 def is_desktop_action_phrase(transcript: str) -> bool:
-    normalized = normalize_whitespace(transcript)
+    normalized = normalize_imperative_phrase(transcript)
     if not normalized:
         return False
     if not DESKTOP_ACTION_PATTERN.match(normalized):
@@ -169,7 +170,7 @@ def is_repo_task_phrase(transcript: str) -> bool:
 
 
 def is_compound_imperative_phrase(transcript: str, *, trigger: ComputerUseTrigger) -> bool:
-    normalized = normalize_whitespace(transcript)
+    normalized = normalize_imperative_phrase(transcript)
     if not normalized or not MULTI_STEP_CONNECTOR_PATTERN.search(normalized):
         return False
 
@@ -198,18 +199,19 @@ def detect_computer_use_trigger(
         return None
 
     normalized = normalize_whitespace(transcript)
+    normalized_imperative = normalize_imperative_phrase(normalized)
     if not normalized:
         return None
 
-    word_count = len(normalized.split())
+    word_count = len(normalized_imperative.split())
     if (
-        len(normalized) <= 120
+        len(normalized_imperative) <= 120
         and word_count <= 16
-        and (is_desktop_action_phrase(normalized) or is_repo_task_phrase(normalized))
+        and (is_desktop_action_phrase(normalized_imperative) or is_repo_task_phrase(normalized))
     ):
         return "action_phrase"
 
-    if is_compound_imperative_phrase(normalized, trigger="action_phrase"):
+    if is_compound_imperative_phrase(normalized_imperative, trigger="action_phrase"):
         return "action_phrase"
 
     return None
@@ -236,7 +238,7 @@ class ComputerUsePlanner:
         selection_text: Optional[str] = None,
         clipboard_text: Optional[str] = None,
     ) -> ComputerUsePlan:
-        normalized = normalize_whitespace(transcript)
+        normalized = normalize_imperative_phrase(transcript)
         if not normalized:
             return ComputerUsePlan(
                 kind="refusal",
