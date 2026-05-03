@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from typing import Optional
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from local_task_shell.models import LocalTaskStep, TaskRetryMode
+
+
+MAX_AUDIO_BASE64_CHARS = 14_000_000
+MAX_LIVE_CHUNK_BASE64_CHARS = 256_000
 
 
 class APIKeyPayload(BaseModel):
@@ -34,7 +39,7 @@ class CaptureStatsPayload(BaseModel):
 
 
 class ProcessAudioPayload(BaseModel):
-    audio_base64: str
+    audio_base64: str = Field(max_length=MAX_AUDIO_BASE64_CHARS)
     mode: str = "dictation"
     context: Optional[SmartContextPayload] = None
     context_warning: Optional[str] = None
@@ -51,7 +56,7 @@ class ProcessAudioPayload(BaseModel):
 
 
 class TestAudioPayload(BaseModel):
-    audio_base64: str
+    audio_base64: str = Field(max_length=MAX_AUDIO_BASE64_CHARS)
     capture_stats: Optional[CaptureStatsPayload] = None
 
 
@@ -68,6 +73,26 @@ class ActionReviewDecisionPayload(BaseModel):
     run_id: str
 
 
+class LocalTaskCreatePayload(BaseModel):
+    request_text: str
+    command: Optional[str] = None
+    cwd: Optional[str] = None
+    title: Optional[str] = None
+    run_kind: str = "single_step"
+    plan_summary: Optional[str] = None
+    steps: list[LocalTaskStep] = Field(default_factory=list)
+
+
+class LocalTaskReviewDecisionPayload(BaseModel):
+    run_id: str
+    review_id: str
+    retry_mode: Optional[TaskRetryMode] = None
+
+
+class LocalTaskCancelPayload(BaseModel):
+    run_id: str
+
+
 class RefreshProviderModelsPayload(BaseModel):
     provider: Optional[str] = None
 
@@ -79,7 +104,7 @@ class LiveTranscriptionStartPayload(BaseModel):
 
 class LiveTranscriptionChunkPayload(BaseModel):
     session_id: str
-    pcm_s16le_base64: str
+    pcm_s16le_base64: str = Field(max_length=MAX_LIVE_CHUNK_BASE64_CHARS)
     sample_rate: int = 16000
 
 

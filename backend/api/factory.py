@@ -10,6 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from api.config_router import build_config_router
 from api.domains_router import build_domains_router
 from api.health_router import build_health_router
+from api.library_router import build_library_router
 from api.memory_router import build_memory_router
 from api.recording_router import build_recording_router
 from api.runtime_router import build_runtime_router
@@ -78,6 +79,7 @@ def create_app(state: BackendAppState | None = None, *, local_api_token: str | N
     app.include_router(build_recording_router(backend_state), dependencies=protected)
     app.include_router(build_usage_router(backend_state), dependencies=protected)
     app.include_router(build_writing_tools_router(backend_state), dependencies=protected)
+    app.include_router(build_library_router(backend_state), dependencies=protected)
     app.include_router(build_memory_router(backend_state), dependencies=protected)
     app.include_router(build_skills_router(backend_state), dependencies=protected)
     return app

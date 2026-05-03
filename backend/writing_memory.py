@@ -7,16 +7,17 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, Iterable, List, Literal, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
+from library_models import InboxNote, KEYLESS_MODEL_PROVIDERS, LibraryItem, LibraryItemMetadata, LibraryMemorySource
 from utils.logger import get_logger
 from utils.paths import get_app_home, safe_chmod
 
 
 logger = get_logger()
-SCHEMA_VERSION = "2"
+SCHEMA_VERSION = "3"
 LOCK_RETRY_DELAYS = (0.05, 0.1, 0.2)
 SQLITE_BUSY_TIMEOUT_SECONDS = 1.5
 WORD_BOUNDARY_TEMPLATE = r"(?<!\w){pattern}(?!\w)"
@@ -31,6 +32,7 @@ MAX_HISTORY_TRANSCRIPT_CHARS = 32_000
 MAX_HISTORY_FINAL_OUTPUT_CHARS = 32_000
 MAX_HISTORY_JSON_BLOB_CHARS = 32_000
 MAX_HISTORY_ITEMS = 1000
+MAX_LIBRARY_ITEMS = 1500
 
 
 def _validate_required_text(value: str, *, field: str, max_chars: int) -> str:
@@ -171,7 +173,7 @@ class WritingToolsSnapshot(BaseModel):
 
 class HistoryItem(BaseModel):
     id: int
-    mode: Literal["dictation", "smart_transform"]
+    mode: Literal["dictation", "smart_transform", "local_task"]
     transcript: str
     final_output: str
     created_at: str
@@ -181,6 +183,73 @@ class HistoryItem(BaseModel):
     stt_model: Optional[str] = None
     llm_provider: Optional[str] = None
     llm_model: Optional[str] = None
+
+
+def build_library_preview(text: str, *, max_chars: int = 136) -> str:
+    normalized = _normalize_spaces(text)
+    if len(normalized) <= max_chars:
+        return normalized
+    return f"{normalized[:max_chars].rstrip()}..."
+
+
+def _safe_int(value: Any) -> Optional[int]:
+    if value is None or value == "":
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _normalize_app_name(value: Optional[str]) -> str:
+    cleaned = _normalize_spaces(value)
+    return cleaned if cleaned and cleaned != "Unknown" else "Unknown app"
+
+
+def _lane_title(lane: str, *, source_type: str) -> str:
+    if source_type == "note":
+        if lane == "smart":
+            return "Saved Smart note"
+        if lane == "local_task":
+            return "Saved task note"
+        if lane == "computer_use":
+            return "Saved computer-use note"
+        if lane == "dictate":
+            return "Saved dictation note"
+        return "Saved note"
+    if lane == "computer_use":
+        return "Computer Use run"
+    if lane == "local_task":
+        return "Local Task run"
+    if lane == "smart":
+        return "Smart run"
+    return "Dictation run"
+
+
+def _lane_label(lane: str) -> str:
+    if lane == "computer_use":
+        return "Computer Use"
+    if lane == "local_task":
+        return "Local Task"
+    if lane == "smart":
+        return "Smart"
+    if lane == "dictate":
+        return "Dictate"
+    return "Note"
+
+
+def _is_local_provider(provider: Optional[str]) -> bool:
+    return bool(provider and provider in KEYLESS_MODEL_PROVIDERS)
+
+
+def _memory_note_weight(note: InboxNote) -> tuple[bool, float]:
+    if note.source_kind == "task_result":
+        return True, 1.2
+    if note.source_kind == "transformed_output":
+        return True, 1.1
+    if note.source_kind in {"selection_text", "clipboard_text"}:
+        return True, 0.95
+    return True, 0.8
 
 
 def _utc_timestamp() -> str:
@@ -456,10 +525,100 @@ class WritingToolsStore:
         with self._lock:
             return self._run_read_with_lock_retries(lambda conn: self._read_history_item(conn, item_id))
 
+    def append_note(self, note: InboxNote) -> InboxNote:
+        def _write(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO inbox_notes (
+                    id,
+                    text,
+                    created_at,
+                    app_name,
+                    bundle_id,
+                    window_title,
+                    page_title,
+                    url_host,
+                    url_path,
+                    surface_kind,
+                    source_mode,
+                    source_kind,
+                    output_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    note.id,
+                    note.text,
+                    note.created_at,
+                    note.app_name,
+                    note.bundle_id,
+                    note.window_title,
+                    note.page_title,
+                    note.url_host,
+                    note.url_path,
+                    note.surface_kind,
+                    note.source_mode,
+                    note.source_kind,
+                    note.output_mode,
+                ),
+            )
+
+        self._run_write_with_lock_retries(_write)
+        return note
+
+    def list_notes(self, limit: int = 500) -> List[InboxNote]:
+        with self._lock:
+            return self._run_read_with_lock_retries(lambda conn: self._read_notes(conn, limit=limit))
+
+    def get_note(self, note_id: str) -> Optional[InboxNote]:
+        with self._lock:
+            return self._run_read_with_lock_retries(lambda conn: self._read_note(conn, note_id))
+
+    def delete_note(self, note_id: str) -> bool:
+        def _write(conn: sqlite3.Connection) -> bool:
+            cursor = conn.execute("DELETE FROM inbox_notes WHERE id = ?", (note_id,))
+            return cursor.rowcount > 0
+
+        return bool(self._run_write_with_lock_retries(_write))
+
+    def list_library_items(
+        self,
+        *,
+        filter_value: str = "all",
+        query: str = "",
+        limit: int = 250,
+    ) -> List[LibraryItem]:
+        clamped_limit = max(1, min(limit, MAX_LIBRARY_ITEMS))
+        notes = self.list_notes(limit=clamped_limit)
+        history = self.list_history(limit=clamped_limit)
+        query_tokens = [token for token in _normalize_spaces(query).lower().split(" ") if token]
+        items = [
+            *[self._note_to_library_item(note) for note in notes],
+            *[self._history_to_library_item(item) for item in history],
+        ]
+        filtered = [
+            item
+            for item in items
+            if self._library_filter_matches(item, filter_value=filter_value, query_tokens=query_tokens)
+        ]
+        filtered.sort(
+            key=lambda item: (item.created_at, item.id),
+            reverse=True,
+        )
+        return filtered[:clamped_limit]
+
+    def list_library_memory_sources(self) -> List[LibraryMemorySource]:
+        sources: List[LibraryMemorySource] = []
+        for note in self.list_notes(limit=MAX_LIBRARY_ITEMS):
+            sources.append(self._note_to_memory_source(note))
+        for item in self.list_history(limit=MAX_LIBRARY_ITEMS):
+            sources.append(self._history_to_memory_source(item))
+        sources.sort(key=lambda item: item.created_at, reverse=True)
+        return sources
+
     def record_history(
         self,
         *,
-        mode: Literal["dictation", "smart_transform"],
+        mode: Literal["dictation", "smart_transform", "local_task"],
         transcript: str,
         final_output: str,
         telemetry: Dict[str, Any],
@@ -543,6 +702,14 @@ class WritingToolsStore:
                     version_row = conn.execute("SELECT value FROM meta WHERE key = 'schema_version'").fetchone()
                     current_version = str(version_row["value"]) if version_row else None
                     if current_version == SCHEMA_VERSION:
+                        self._create_schema(conn)
+                        self._migrate_legacy_inbox_jsonl(conn)
+                        conn.commit()
+                        return
+                    if current_version == "2":
+                        self._create_schema(conn)
+                        self._migrate_legacy_inbox_jsonl(conn)
+                        conn.commit()
                         return
                     if current_version == "1":
                         legacy_state = self._export_legacy_state(conn)
@@ -562,6 +729,7 @@ class WritingToolsStore:
             self._create_schema(conn)
             if legacy_state is not None:
                 self._import_legacy_state(conn, legacy_state)
+            self._migrate_legacy_inbox_jsonl(conn)
             conn.commit()
         self._runtime_cache = None
 
@@ -615,10 +783,106 @@ class WritingToolsStore:
                 llm_provider TEXT,
                 llm_model TEXT
             );
+            CREATE TABLE IF NOT EXISTS inbox_notes (
+                id TEXT PRIMARY KEY,
+                text TEXT NOT NULL,
+                created_at TEXT NOT NULL,
+                app_name TEXT NOT NULL,
+                bundle_id TEXT,
+                window_title TEXT,
+                page_title TEXT,
+                url_host TEXT,
+                url_path TEXT,
+                surface_kind TEXT,
+                source_mode TEXT NOT NULL,
+                source_kind TEXT NOT NULL,
+                output_mode TEXT
+            );
             """
         )
         conn.execute("INSERT OR REPLACE INTO meta (key, value) VALUES ('schema_version', ?)", (SCHEMA_VERSION,))
         safe_chmod(self.path, 0o600)
+
+    def _legacy_inbox_jsonl_path(self) -> Path:
+        return get_app_home() / "inbox.jsonl"
+
+    def _migrate_legacy_inbox_jsonl(self, conn: sqlite3.Connection) -> None:
+        legacy_path = self._legacy_inbox_jsonl_path()
+        if not legacy_path.exists():
+            return
+
+        migration_row = conn.execute(
+            "SELECT value FROM meta WHERE key = 'inbox_jsonl_migration_completed_at'"
+        ).fetchone()
+        if migration_row is not None:
+            return
+
+        notes: list[InboxNote] = []
+        invalid_lines = 0
+        with legacy_path.open("r", encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line:
+                    continue
+                try:
+                    notes.append(InboxNote.model_validate_json(line))
+                except Exception as exc:
+                    invalid_lines += 1
+                    logger.warning("Skipping invalid inbox migration entry: %s", exc)
+
+        for note in notes:
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO inbox_notes (
+                    id,
+                    text,
+                    created_at,
+                    app_name,
+                    bundle_id,
+                    window_title,
+                    page_title,
+                    url_host,
+                    url_path,
+                    surface_kind,
+                    source_mode,
+                    source_kind,
+                    output_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    note.id,
+                    note.text,
+                    note.created_at,
+                    note.app_name,
+                    note.bundle_id,
+                    note.window_title,
+                    note.page_title,
+                    note.url_host,
+                    note.url_path,
+                    note.surface_kind,
+                    note.source_mode,
+                    note.source_kind,
+                    note.output_mode,
+                ),
+            )
+
+        backup_name = f"{legacy_path.name}.migrated-{int(time.time())}.bak"
+        backup_path = legacy_path.with_name(backup_name)
+        shutil.move(legacy_path, backup_path)
+        safe_chmod(backup_path, 0o600)
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('inbox_jsonl_migration_completed_at', ?)",
+            (_utc_timestamp(),),
+        )
+        conn.execute(
+            "INSERT OR REPLACE INTO meta (key, value) VALUES ('inbox_jsonl_migration_backup', ?)",
+            (backup_path.name,),
+        )
+        if invalid_lines:
+            conn.execute(
+                "INSERT OR REPLACE INTO meta (key, value) VALUES ('inbox_jsonl_migration_invalid_lines', ?)",
+                (str(invalid_lines),),
+            )
 
     def _load_tools(self, *, enabled_only: bool) -> WritingToolsSnapshot:
         where_clause = "WHERE enabled = 1" if enabled_only else ""
@@ -859,6 +1123,34 @@ class WritingToolsStore:
                 ),
             )
 
+    def _read_notes(self, conn: sqlite3.Connection, *, limit: int) -> List[InboxNote]:
+        rows = conn.execute(
+            "SELECT * FROM inbox_notes ORDER BY created_at DESC, id DESC LIMIT ?",
+            (max(1, min(limit, 1000)),),
+        ).fetchall()
+        return [self._row_to_inbox_note(row) for row in rows]
+
+    def _read_note(self, conn: sqlite3.Connection, note_id: str) -> Optional[InboxNote]:
+        row = conn.execute("SELECT * FROM inbox_notes WHERE id = ?", (note_id,)).fetchone()
+        return self._row_to_inbox_note(row) if row is not None else None
+
+    def _row_to_inbox_note(self, row: sqlite3.Row) -> InboxNote:
+        return InboxNote(
+            id=str(row["id"]),
+            text=str(row["text"]),
+            created_at=str(row["created_at"]),
+            app_name=str(row["app_name"] or "Unknown"),
+            bundle_id=row["bundle_id"],
+            window_title=row["window_title"],
+            page_title=row["page_title"],
+            url_host=row["url_host"],
+            url_path=row["url_path"],
+            surface_kind=row["surface_kind"],
+            source_mode=str(row["source_mode"]),
+            source_kind=str(row["source_kind"]),
+            output_mode=row["output_mode"],
+        )
+
     def _read_history(self, conn: sqlite3.Connection, limit: int) -> List[HistoryItem]:
         rows = conn.execute(
             "SELECT * FROM history_items ORDER BY id DESC LIMIT ?",
@@ -884,6 +1176,206 @@ class WritingToolsStore:
             llm_provider=row["llm_provider"],
             llm_model=row["llm_model"],
         )
+
+    def _note_to_library_item(self, note: InboxNote) -> LibraryItem:
+        lane = "note"
+        if note.source_kind == "task_result" or note.source_mode == "local_task":
+            lane = "local_task"
+        elif note.source_kind == "transformed_output" and note.source_mode == "smart_transform":
+            lane = "smart"
+        elif note.source_mode == "dictation" and note.source_kind == "spoken_text":
+            lane = "note"
+
+        memory_eligible, _memory_weight = _memory_note_weight(note)
+        local_only = note.source_mode in {"dictation", "local_task"}
+        metadata = LibraryItemMetadata(
+            source_mode=note.source_mode,
+            source_kind=note.source_kind,
+            output_mode=note.output_mode,
+            app_name=_normalize_app_name(note.app_name),
+            bundle_id=note.bundle_id,
+            window_title=note.window_title,
+            page_title=note.page_title,
+            url_host=note.url_host,
+            url_path=note.url_path,
+            surface_kind=note.surface_kind,
+            local_only=local_only,
+            model_backed=note.source_mode == "smart_transform",
+            transcript_chars=0,
+            output_chars=len(note.text),
+            memory_eligible=memory_eligible,
+            memory_state="eligible" if memory_eligible else "ignored",
+        )
+        return LibraryItem(
+            id=f"note:{note.id}",
+            source_type="note",
+            source_id=note.id,
+            lane=lane,
+            title=_lane_title(lane, source_type="note"),
+            label=_lane_label(lane),
+            preview=build_library_preview(note.text),
+            created_at=note.created_at,
+            primary_text=note.text,
+            secondary_text=None,
+            metadata=metadata,
+            search_text=_normalize_spaces(
+                " ".join(
+                    part
+                    for part in (
+                        note.text,
+                        note.app_name,
+                        note.window_title,
+                        note.page_title,
+                        note.url_host,
+                        note.url_path,
+                        note.surface_kind,
+                        note.source_mode,
+                        note.source_kind,
+                        note.output_mode,
+                        lane,
+                    )
+                    if part
+                )
+            ).lower(),
+        )
+
+    def _history_to_library_item(self, item: HistoryItem) -> LibraryItem:
+        telemetry = item.telemetry or {}
+        context = item.context or {}
+        if telemetry.get("intent") == "computer_use":
+            lane = "computer_use"
+        elif item.mode == "local_task":
+            lane = "local_task"
+        elif item.mode == "smart_transform":
+            lane = "smart"
+        else:
+            lane = "dictate"
+
+        stt_provider = item.stt_provider
+        llm_provider = item.llm_provider
+        metadata = LibraryItemMetadata(
+            source_mode=item.mode,
+            source_kind="run",
+            output_mode=telemetry.get("output_mode"),
+            app_name=_normalize_app_name(context.get("app_name")),
+            bundle_id=context.get("bundle_id"),
+            window_title=context.get("window_title"),
+            page_title=context.get("page_title"),
+            url_host=context.get("url_host"),
+            url_path=context.get("url_path"),
+            surface_kind=context.get("surface_kind"),
+            stt_provider=stt_provider,
+            stt_model=item.stt_model,
+            llm_provider=llm_provider,
+            llm_model=item.llm_model,
+            skill_id=((telemetry.get("skill_used") or {}) if isinstance(telemetry.get("skill_used"), dict) else {}).get("id"),
+            skill_label=((telemetry.get("skill_used") or {}) if isinstance(telemetry.get("skill_used"), dict) else {}).get("name"),
+            domain_id=telemetry.get("domain_id") or context.get("domain_id"),
+            intent=telemetry.get("intent"),
+            local_only=bool(item.mode == "local_task" or (_is_local_provider(stt_provider) and (not llm_provider or _is_local_provider(llm_provider)))),
+            model_backed=bool(item.mode == "smart_transform" and llm_provider),
+            transcript_chars=len(item.transcript),
+            output_chars=len(item.final_output),
+            duration_ms=_safe_int(telemetry.get("duration_ms")),
+            step_count=_safe_int(telemetry.get("step_count")),
+            completed_steps=_safe_int(telemetry.get("completed_steps")),
+            failed_step_id=telemetry.get("failed_step_id"),
+            failed_step_title=telemetry.get("failed_step_title"),
+            memory_eligible=True,
+            memory_state="eligible",
+        )
+        primary_text = item.final_output or item.transcript
+        secondary_text = item.transcript if item.final_output and item.final_output != item.transcript else None
+        return LibraryItem(
+            id=f"history:{item.id}",
+            source_type="history",
+            source_id=str(item.id),
+            lane=lane,
+            title=_lane_title(lane, source_type="history"),
+            label=_lane_label(lane),
+            preview=build_library_preview(primary_text),
+            created_at=item.created_at,
+            primary_text=primary_text,
+            secondary_text=secondary_text,
+            metadata=metadata,
+            search_text=_normalize_spaces(
+                " ".join(
+                    part
+                    for part in (
+                        item.transcript,
+                        item.final_output,
+                        context.get("app_name"),
+                        context.get("window_title"),
+                        context.get("page_title"),
+                        context.get("url_host"),
+                        context.get("url_path"),
+                        context.get("surface_kind"),
+                        item.mode,
+                        telemetry.get("intent"),
+                        telemetry.get("output_mode"),
+                        metadata.skill_label,
+                        metadata.skill_id,
+                        metadata.domain_id,
+                        lane,
+                    )
+                    if part
+                )
+            ).lower(),
+        )
+
+    def _history_to_memory_source(self, item: HistoryItem) -> LibraryMemorySource:
+        telemetry = item.telemetry or {}
+        context = item.context or {}
+        return LibraryMemorySource(
+            source_type="history",
+            source_id=str(item.id),
+            primary_text=item.final_output or item.transcript,
+            secondary_text=item.transcript if item.final_output and item.final_output != item.transcript else "",
+            source_mode=item.mode,
+            source_kind="run",
+            output_mode=telemetry.get("output_mode"),
+            app_name=context.get("app_name"),
+            url_host=context.get("url_host"),
+            domain_id=telemetry.get("domain_id") or context.get("domain_id"),
+            stt_provider=item.stt_provider,
+            stt_model=item.stt_model,
+            llm_provider=item.llm_provider,
+            llm_model=item.llm_model,
+            created_at=item.created_at,
+            memory_eligible=True,
+            memory_weight=1.0,
+        )
+
+    def _note_to_memory_source(self, note: InboxNote) -> LibraryMemorySource:
+        memory_eligible, memory_weight = _memory_note_weight(note)
+        return LibraryMemorySource(
+            source_type="note",
+            source_id=note.id,
+            primary_text=note.text,
+            secondary_text="",
+            source_mode=note.source_mode,
+            source_kind=note.source_kind,
+            output_mode=note.output_mode,
+            app_name=note.app_name,
+            url_host=note.url_host,
+            domain_id=None,
+            created_at=note.created_at,
+            memory_eligible=memory_eligible,
+            memory_weight=memory_weight,
+        )
+
+    def _library_filter_matches(self, item: LibraryItem, *, filter_value: str, query_tokens: Iterable[str]) -> bool:
+        if filter_value == "notes" and item.source_type != "note":
+            return False
+        if filter_value == "runs" and item.source_type != "history":
+            return False
+        if filter_value in {"smart", "dictate", "local_task", "computer_use", "note"} and item.lane != filter_value:
+            return False
+        search_text = item.search_text
+        for token in query_tokens:
+            if token not in search_text:
+                return False
+        return True
 
     def _run_write_with_lock_retries(self, callback):
         attempt = 0

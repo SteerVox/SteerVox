@@ -10,6 +10,7 @@ import { useFloatingWidgetController, type WidgetState } from './hooks/useFloati
 import type {
   BackendBootState,
   BackendStatus,
+  LocalTaskStep,
 } from './types'
 
 const SHELL_VARIANTS = {
@@ -60,6 +61,19 @@ const CONTENT_VARIANTS = {
 
 function compactHost(host?: string | null) {
   return host ? host.replace(/^www\./, '') : null
+}
+
+function describeTaskStep(step: LocalTaskStep) {
+  return step.script || step.command || step.summary
+}
+
+function formatTaskStepStatus(step: LocalTaskStep) {
+  if (step.status === 'running') return 'Running'
+  if (step.status === 'completed') return 'Done'
+  if (step.status === 'failed') return 'Failed'
+  if (step.status === 'blocked') return 'Blocked'
+  if (step.status === 'cancelled') return 'Cancelled'
+  return 'Pending'
 }
 
 function getProcessingTitle(status: BackendStatus | null, bootState: BackendBootState, widgetState: WidgetState) {
@@ -129,7 +143,8 @@ export const FloatingWidget = () => {
     hideSourceRef,
     autoRetractTimerRef,
     preparingPasteBusy,
-    pendingActionReview,
+    pendingReview,
+    activeTaskRun,
     smartPreview,
     liveTranscription,
     showActionReview,
@@ -183,6 +198,16 @@ export const FloatingWidget = () => {
       : liveTranscription?.source === 'fallback'
         ? 'Fallback'
         : 'Live'
+  const showTaskProgress = Boolean(
+    !showActionReview
+      && activeTaskRun
+      && ['pending_review', 'running'].includes(activeTaskRun.status),
+  )
+  const activeTaskPrimary = activeTaskRun?.result_summary?.summary
+    || activeTaskRun?.output_blocks?.slice(-1)[0]?.text
+    || activeTaskRun?.plan_summary
+    || activeTaskRun?.command
+    || 'Running local task…'
   const activeTemplateLabel = templateOptions.find((template) => template.id === (runtimeConfig?.hotkeys.default_skill_id || ''))?.name
     || templateOptions[0]?.name
     || 'Standard'
@@ -196,7 +221,7 @@ export const FloatingWidget = () => {
     : effectiveWidgetState === 'processing'
       ? 'shadow-[0_20px_42px_rgba(58,201,230,0.14)]'
       : ''
-  const showSecondarySelectors = !isCapturing && !showSmartPreview && !showActionReview && !showLiveTranscript
+  const showSecondarySelectors = !isCapturing && !showSmartPreview && !showActionReview && !showLiveTranscript && !showTaskProgress
   const secondaryControlCount = 1 + (runtimeConfig ? 1 : 0) + (templateOptions.length > 0 ? 1 : 0)
   const secondaryControlsGridClass = secondaryControlCount >= 3
     ? 'grid-cols-3'
@@ -207,10 +232,12 @@ export const FloatingWidget = () => {
     ? 'min-h-[148px] items-start py-3.5'
     : showSmartPreview
       ? 'min-h-[112px] items-start py-3.5'
+      : showTaskProgress
+        ? 'min-h-[112px] items-start py-3.5'
       : showSecondarySelectors
         ? 'min-h-[92px] items-start py-3.5'
         : 'min-h-[84px] items-center py-3.5'
-  const compactStatusDetailStyle = showSmartPreview
+  const compactStatusDetailStyle = showSmartPreview || showTaskProgress
     ? {
         display: '-webkit-box',
         WebkitBoxOrient: 'vertical' as const,
@@ -227,7 +254,13 @@ export const FloatingWidget = () => {
   const compactStatusTitle = successMessage
     ? successMessage.title
     : showActionReview
-      ? pendingActionReview?.title || 'Review action'
+      ? pendingReview?.kind === 'task_retry'
+        ? 'Retry local task'
+        : pendingReview?.kind === 'task_plan'
+          ? 'Review task plan'
+          : pendingReview?.title || 'Review action'
+    : showTaskProgress
+      ? activeTaskRun?.title || 'Local task'
     : effectiveWidgetState === 'booting'
       ? compactProcessingTitle
       : effectiveWidgetState === 'processing'
@@ -250,7 +283,9 @@ export const FloatingWidget = () => {
   const compactStatusDetail = successMessage
     ? successMessage.detail
     : showActionReview
-      ? pendingActionReview?.summary || 'Review the proposed desktop action before it runs.'
+      ? pendingReview?.summary || 'Review the proposed local task before it runs.'
+    : showTaskProgress
+      ? activeTaskPrimary
     : effectiveWidgetState === 'booting'
       ? compactProcessingSubtitle
       : effectiveWidgetState === 'processing'
@@ -262,13 +297,13 @@ export const FloatingWidget = () => {
             ? 'Arming Smart capture'
             : 'Arming Dictate capture'
         : effectiveWidgetState === 'error_nokey'
-          ? 'Open Settings to finish provider setup.'
+          ? 'Open Settings to finish the active voice path.'
           : effectiveWidgetState === 'disconnected'
             ? `Reconnect ${DISPLAY_NAME} to keep dictating.`
             : isCapturing
               ? targetLabel || 'Listening for speech'
               : 'Dictate or Smart'
-  const recordingBlockedByReview = Boolean(showActionReview && pendingActionReview?.status !== 'error')
+  const recordingBlockedByReview = Boolean(showActionReview && pendingReview?.status !== 'error')
 
   const barMultipliers = [0.55, 0.85, 1, 0.82, 0.62]
   const minHeight = 3
@@ -327,7 +362,9 @@ export const FloatingWidget = () => {
   const contentKey = successMessage
     ? `success-${successMessage.title}`
     : showActionReview
-      ? `action-review-${pendingActionReview?.run_id || 'active'}`
+      ? `action-review-${pendingReview?.run_id || 'active'}`
+    : showTaskProgress
+      ? `task-progress-${activeTaskRun?.run_id || 'active'}-${activeTaskRun?.updated_at || activeTaskPrimary}`
     : showLiveTranscript
       ? `live-transcript-${captureState.phase || 'idle'}-${liveTranscription?.updated_at || liveTranscriptPrimary}`
     : showSmartPreview
@@ -512,6 +549,11 @@ export const FloatingWidget = () => {
                             options={templateOptions.map((template) => ({
                               id: template.id,
                               name: template.name,
+                              group: template.id === 'system_dictation'
+                                ? 'Dictation'
+                                : ['system_computer_use', 'system_local_task', 'system_terminal'].includes(template.id)
+                                  ? `${DISPLAY_NAME} actions`
+                                  : 'Smart writing',
                             }))}
                             selectedSkillId={runtimeConfig?.hotkeys.default_skill_id || templateOptions[0]?.id || ''}
                           />
@@ -593,6 +635,37 @@ export const FloatingWidget = () => {
                           >
                             {compactStatusDetail}
                           </div>
+                          {showTaskProgress && activeTaskRun?.run_kind === 'multi_step' ? (
+                            <div className="mt-3 space-y-2" data-testid="widget-task-progress-steps">
+                              {activeTaskRun.steps.map((step, index) => {
+                                const isCurrent = step.id === activeTaskRun.current_step_id && activeTaskRun.status === 'running'
+                                return (
+                                  <div
+                                    key={step.id}
+                                    className={`rounded-2xl border px-3 py-2 text-[11px] leading-5 ${
+                                      isCurrent
+                                        ? 'border-[#8ceef8]/24 bg-[rgba(24,79,90,0.24)] text-text-primary'
+                                        : step.status === 'completed'
+                                          ? 'border-semantic-success/20 bg-[rgba(17,64,43,0.22)] text-text-secondary'
+                                          : step.status === 'failed' || step.status === 'blocked'
+                                            ? 'border-semantic-error/24 bg-[rgba(57,16,24,0.34)] text-text-secondary'
+                                            : 'border-white/8 bg-white/[0.04] text-text-secondary'
+                                    }`}
+                                  >
+                                    <div className="flex items-center justify-between gap-3">
+                                      <div className="font-medium text-text-primary">{index + 1}. {step.title}</div>
+                                      <div className="text-[10px] uppercase tracking-[0.16em] text-text-muted">
+                                        {formatTaskStepStatus(step)}
+                                      </div>
+                                    </div>
+                                    <div className="mt-1 whitespace-pre-wrap break-words">
+                                      {step.summary}
+                                    </div>
+                                  </div>
+                                )
+                              })}
+                            </div>
+                          ) : null}
                         </div>
                       )}
                     </div>
@@ -648,58 +721,128 @@ export const FloatingWidget = () => {
         ) : null}
       </AnimatePresence>
 
-      {showActionReview && pendingActionReview ? (
+      {showActionReview && pendingReview ? (
         <div className="titlebar-nodrag relative z-10 mt-2 px-2" data-testid="widget-action-review">
           <div className="widget-shell rounded-[24px] border border-white/12 bg-[linear-gradient(180deg,rgba(9,14,20,0.97),rgba(4,7,12,0.985))] p-4 shadow-[0_24px_64px_rgba(0,0,0,0.48)]">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-text-muted">
-                  {pendingActionReview.status === 'error' ? 'Action review error' : 'Review desktop action'}
+                  {pendingReview.status === 'error'
+                    ? pendingReview.scope === 'desktop_action' ? 'Action review error' : 'Task review error'
+                    : pendingReview.scope === 'desktop_action'
+                      ? 'Review desktop action'
+                      : pendingReview.kind === 'task_plan'
+                        ? 'Review task plan'
+                        : pendingReview.kind === 'task_retry'
+                          ? 'Retry local task'
+                          : 'Review local task'}
                 </div>
-                <div className="mt-2 text-sm font-medium text-text-primary">{pendingActionReview.summary}</div>
+                <div className="mt-2 text-sm font-medium text-text-primary">{pendingReview.summary}</div>
               </div>
               <div className={`rounded-full border px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] ${
-                pendingActionReview.status === 'error'
+                pendingReview.status === 'error'
                   ? 'border-semantic-error/30 bg-[rgba(87,20,30,0.78)] text-semantic-error'
                   : 'border-[#8ceef8]/26 bg-[rgba(24,79,90,0.72)] text-[#8ceef8]'
               }`}>
-                {pendingActionReview.status === 'error' ? 'Needs review' : pendingActionReview.action_type.replace('_', ' ')}
+                {pendingReview.status === 'error'
+                  ? 'Needs review'
+                  : pendingReview.kind.replace('_', ' ')}
               </div>
             </div>
 
-            {pendingActionReview.error ? (
+            {pendingReview.error ? (
               <div className="mt-3 rounded-2xl border border-semantic-error/28 bg-[rgba(57,16,24,0.84)] px-3 py-2 text-sm leading-6 text-text-secondary shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
-                {pendingActionReview.error}
+                {pendingReview.error}
               </div>
             ) : null}
 
             <div className="mt-3 rounded-2xl border border-white/10 bg-[rgba(3,6,10,0.9)] p-3 shadow-[inset_0_1px_0_rgba(255,255,255,0.03)]">
-              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-text-muted">AppleScript preview</div>
+              <div className="text-[11px] font-semibold uppercase tracking-[0.24em] text-text-muted">
+                {pendingReview.kind === 'task_plan'
+                  ? 'Plan preview'
+                  : pendingReview.language === 'applescript'
+                    ? 'AppleScript preview'
+                    : 'Command preview'}
+              </div>
               <pre className="mt-3 max-h-[120px] overflow-auto whitespace-pre-wrap break-words text-[12px] leading-6 text-text-secondary">
-                {pendingActionReview.script}
+                {pendingReview.script || pendingReview.command || pendingReview.detail}
               </pre>
             </div>
 
+            {pendingReview.scope === 'local_task' && activeTaskRun?.run_kind === 'multi_step' ? (
+              <div className="mt-3 space-y-2" data-testid="widget-task-step-list">
+                {activeTaskRun.steps.map((step, index) => (
+                  <div
+                    key={step.id}
+                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-2 text-[12px] leading-6 text-text-secondary"
+                  >
+                    <div className="flex items-center justify-between gap-3">
+                      <div className="font-medium text-text-primary">{index + 1}. {step.title}</div>
+                      <div className="text-[10px] uppercase tracking-[0.16em] text-text-muted">
+                        {formatTaskStepStatus(step)}
+                      </div>
+                    </div>
+                    <div className="mt-1 whitespace-pre-wrap break-words">{describeTaskStep(step)}</div>
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {pendingReview.cwd ? (
+              <div className="mt-3 text-xs leading-6 text-text-muted">
+                Working directory: {pendingReview.cwd}
+              </div>
+            ) : null}
+
             <div className="mt-4 flex flex-wrap gap-2">
+              {pendingReview.kind === 'task_retry' ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void submitActionReviewDecision('approve', pendingReview, 'retry_failed_step')
+                    }}
+                    disabled={actionReviewBusy !== null || pendingReview.status !== 'pending'}
+                    className="inline-flex items-center justify-center rounded-full border border-[#8ceef8]/22 bg-[linear-gradient(180deg,rgba(89,223,244,0.18),rgba(20,87,108,0.12))] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8ceef8] transition-colors disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    {actionReviewBusy === 'approve' ? 'Retrying…' : 'Retry step'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      void submitActionReviewDecision('approve', pendingReview, 'rerun_all')
+                    }}
+                    disabled={actionReviewBusy !== null || pendingReview.status !== 'pending'}
+                    className="inline-flex items-center justify-center rounded-full border border-white/10 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-primary transition-colors hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-45"
+                  >
+                    Run from start
+                  </button>
+                </>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => {
+                    void submitActionReviewDecision('approve', pendingReview)
+                  }}
+                  disabled={actionReviewBusy !== null || pendingReview.status !== 'pending'}
+                  className="inline-flex items-center justify-center rounded-full border border-[#8ceef8]/22 bg-[linear-gradient(180deg,rgba(89,223,244,0.18),rgba(20,87,108,0.12))] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8ceef8] transition-colors disabled:cursor-not-allowed disabled:opacity-45"
+                >
+                  {actionReviewBusy === 'approve' ? 'Approving…' : 'Approve'}
+                </button>
+              )}
               <button
                 type="button"
                 onClick={() => {
-                  void submitActionReviewDecision('approve', pendingActionReview)
-                }}
-                disabled={actionReviewBusy !== null || pendingActionReview.status !== 'pending'}
-                className="inline-flex items-center justify-center rounded-full border border-[#8ceef8]/22 bg-[linear-gradient(180deg,rgba(89,223,244,0.18),rgba(20,87,108,0.12))] px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-[#8ceef8] transition-colors disabled:cursor-not-allowed disabled:opacity-45"
-              >
-                {actionReviewBusy === 'approve' ? 'Approving…' : 'Approve'}
-              </button>
-              <button
-                type="button"
-                onClick={() => {
-                  void submitActionReviewDecision('reject', pendingActionReview)
+                  void submitActionReviewDecision('reject', pendingReview)
                 }}
                 disabled={actionReviewBusy !== null}
                 className="inline-flex items-center justify-center rounded-full border border-white/10 px-4 py-2 text-[11px] font-semibold uppercase tracking-[0.18em] text-text-muted transition-colors hover:bg-white/[0.08] hover:text-text-primary disabled:cursor-not-allowed disabled:opacity-45"
               >
-                {actionReviewBusy === 'reject' ? 'Dismissing…' : pendingActionReview.status === 'error' ? 'Dismiss' : 'Reject'}
+                {actionReviewBusy === 'reject'
+                  ? 'Dismissing…'
+                  : pendingReview.kind === 'task_retry' || pendingReview.status === 'error'
+                    ? 'Dismiss'
+                    : 'Reject'}
               </button>
             </div>
           </div>

@@ -379,10 +379,15 @@ export async function syncFrontendPackageJson(manifest) {
     'build:local-speech-helper': 'node scripts/build-local-speech-helper.mjs',
     'build:system-control-helper': 'node scripts/build-system-control-helper.mjs',
     'prepare:ffmpeg-runtime': 'node scripts/prepare-ffmpeg-runtime.mjs',
+    'verify:release': 'bash ../scripts/verify-release.sh public-beta',
     'package:desktop': 'npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder',
     'package:desktop:mac': 'npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder --mac dmg --arm64',
+    'package:desktop:mac:public-beta': 'npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder --mac dmg --arm64',
+    'package:desktop:mac:signed': 'npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder --mac dmg --arm64',
     build: 'npm run branding:validate && npm run validate:mac-assets && npm run build:local-speech-helper && npm run build:system-control-helper && npm run package:desktop',
-    'build:mac': 'bash ../scripts/build-mac.sh',
+    'build:mac': 'bash ../scripts/build-mac.sh public-beta',
+    'build:mac:public-beta': 'bash ../scripts/build-mac.sh public-beta',
+    'build:mac:signed': 'bash ../scripts/build-mac.sh signed',
   }
   packageJson.build.files = [
     'package.json',
@@ -406,8 +411,8 @@ export async function syncFrontendPackageJson(manifest) {
 export async function syncFrontendIndexHtml(manifest) {
   const raw = await fs.readFile(FRONTEND_INDEX_HTML_PATH, 'utf8')
   const next = raw
-    .replace(/<link rel="icon"[^>]*href="[^"]*"[^>]*>/, `    <link rel="icon" type="image/png" href="${toPublicAssetPath(manifest.assets.brandMarkPng)}" />`)
-    .replace(/<title>[\s\S]*?<\/title>/, `    <title>${manifest.windowTitles.main}</title>`)
+    .replace(/^[ \t]*<link rel="icon"[^>]*href="[^"]*"[^>]*>[ \t]*$/m, `    <link rel="icon" type="image/png" href="${toPublicAssetPath(manifest.assets.brandMarkPng)}" />`)
+    .replace(/^[ \t]*<title>.*<\/title>[ \t]*$/m, `    <title>${manifest.windowTitles.main}</title>`)
   await fs.writeFile(FRONTEND_INDEX_HTML_PATH, next)
 }
 
@@ -431,6 +436,10 @@ async function collectFiles(targetPath) {
 function buildQuotedContainsPattern(value) {
   const escaped = escapeRegExp(value)
   return new RegExp(`(['"\`])(?:\\\\.|(?!\\1)[^\\\\\\r\\n])*${escaped}(?:\\\\.|(?!\\1)[^\\\\\\r\\n])*\\1`)
+}
+
+function isGeneratedPythonCache(filePath) {
+  return filePath.endsWith('.pyc') || path.relative(PROJECT_ROOT, filePath).split(path.sep).includes('__pycache__')
 }
 
 async function validateExecutableBrandingResidue(manifest) {
@@ -485,6 +494,7 @@ async function validateExecutableBrandingResidue(manifest) {
 
   for (const filePath of files) {
     if (allowedFiles.has(filePath)) continue
+    if (isGeneratedPythonCache(filePath)) continue
     const content = await fs.readFile(filePath, 'utf8')
     for (const [label, pattern] of patterns) {
       if (pattern.test(content)) {

@@ -1,4 +1,4 @@
-import type { BackendRequestContext } from '../../shared/localBackendAuth'
+import type { BackendRuntimeEventPayload } from '../ipc/contracts'
 
 export interface RuntimeEventStream {
   onopen: ((event: Event) => void) | null
@@ -8,27 +8,35 @@ export interface RuntimeEventStream {
   close(): void
 }
 
-export type RuntimeEventStreamFactory = (requestContext: BackendRequestContext) => Promise<RuntimeEventStream>
+export type RuntimeEventStreamFactory = () => Promise<RuntimeEventStream>
 
 function createEvent(type: string) {
   return new Event(type)
 }
 
-class FetchRuntimeEventStream implements RuntimeEventStream {
+class IpcRuntimeEventStream implements RuntimeEventStream {
   onopen: ((event: Event) => void) | null = null
   onerror: ((event: Event) => void) | null = null
 
   private readonly listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>()
-  private readonly controller = new AbortController()
-  private readonly requestContext: BackendRequestContext
-  private readonly pathname: string
+  private disposeRuntimeEvent: (() => void) | null = null
   private closed = false
 
-  constructor(requestContext: BackendRequestContext, pathname: string) {
-    this.requestContext = requestContext
-    this.pathname = pathname
+  constructor() {
+    if (!window.windowControls?.onBackendRuntimeEvent || !window.windowControls?.startBackendRuntimeEvents) {
+      queueMicrotask(() => this.emitError())
+      return
+    }
+
+    this.disposeRuntimeEvent = window.windowControls.onBackendRuntimeEvent((payload) => {
+      this.consumePayload(payload)
+    })
+
     queueMicrotask(() => {
-      void this.connect()
+      if (this.closed) return
+      void window.windowControls.startBackendRuntimeEvents().catch(() => {
+        this.emitError()
+      })
     })
   }
 
@@ -44,8 +52,10 @@ class FetchRuntimeEventStream implements RuntimeEventStream {
 
   close() {
     this.closed = true
-    this.controller.abort()
+    this.disposeRuntimeEvent?.()
+    this.disposeRuntimeEvent = null
     this.listeners.clear()
+    void window.windowControls?.stopBackendRuntimeEvents?.()
   }
 
   private emit(type: string, data: string) {
@@ -60,108 +70,22 @@ class FetchRuntimeEventStream implements RuntimeEventStream {
     this.onerror?.(createEvent('error'))
   }
 
-  private flushBuffer(buffer: string, flushAll = false) {
-    const normalized = buffer.replace(/\r/g, '')
-    const blocks = normalized.split('\n\n')
-    const remainder = flushAll ? '' : (blocks.pop() ?? '')
+  private consumePayload(payload: BackendRuntimeEventPayload) {
+    if (this.closed) return
 
-    blocks.forEach((block) => {
-      this.consumeBlock(block)
-    })
-
-    if (flushAll && remainder) {
-      this.consumeBlock(remainder)
-    }
-
-    return remainder
-  }
-
-  private consumeBlock(block: string) {
-    if (!block.trim()) {
-      return
-    }
-
-    let eventType = 'message'
-    const dataLines: string[] = []
-
-    block.split('\n').forEach((line) => {
-      if (!line || line.startsWith(':')) {
-        return
-      }
-
-      const separatorIndex = line.indexOf(':')
-      const field = separatorIndex === -1 ? line : line.slice(0, separatorIndex)
-      const rawValue = separatorIndex === -1 ? '' : line.slice(separatorIndex + 1)
-      const value = rawValue.startsWith(' ') ? rawValue.slice(1) : rawValue
-
-      if (field === 'event') {
-        eventType = value || 'message'
-        return
-      }
-
-      if (field === 'data') {
-        dataLines.push(value)
-      }
-    })
-
-    if (!dataLines.length) {
-      return
-    }
-
-    this.emit(eventType, dataLines.join('\n'))
-  }
-
-  private async connect() {
-    try {
-      const response = await fetch(`${this.requestContext.baseUrl}${this.pathname}`, {
-        method: 'GET',
-        headers: this.requestContext.headers,
-        signal: this.controller.signal,
-      })
-
-      if (!response.ok) {
-        throw new Error(`Realtime connection failed (${response.status}).`)
-      }
-
-      if (!response.body) {
-        throw new Error('Realtime connection returned no event stream body.')
-      }
-
-      if (this.closed) {
-        return
-      }
-
+    if (payload.type === 'open') {
       this.onopen?.(createEvent('open'))
-
-      const reader = response.body.getReader()
-      const decoder = new TextDecoder()
-      let buffer = ''
-
-      while (!this.closed) {
-        const { done, value } = await reader.read()
-        if (done) {
-          break
-        }
-
-        buffer += decoder.decode(value, { stream: true })
-        buffer = this.flushBuffer(buffer)
-      }
-
-      buffer += decoder.decode()
-      this.flushBuffer(buffer, true)
-
-      if (!this.closed) {
-        this.emitError()
-      }
-    } catch {
-      if (this.closed || this.controller.signal.aborted) {
-        return
-      }
-      this.emitError()
+      return
     }
+    if (payload.type === 'error') {
+      this.emitError()
+      return
+    }
+
+    this.emit(payload.type, payload.data ?? '')
   }
 }
 
-export const createFetchRuntimeEventStream: RuntimeEventStreamFactory = async (requestContext) => {
-  return new FetchRuntimeEventStream(requestContext, '/events/runtime')
+export const createFetchRuntimeEventStream: RuntimeEventStreamFactory = async () => {
+  return new IpcRuntimeEventStream()
 }

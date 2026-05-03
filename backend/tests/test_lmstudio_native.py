@@ -73,16 +73,17 @@ def test_lmstudio_native_chat_uses_native_v1_payload(monkeypatch):
     assert response.content == "Please ship this once QA has approved it."
     assert calls == [{
         "method": "POST",
-        "url": "http://localhost:1234/api/v1/chat",
+        "url": "http://localhost:1234/v1/chat/completions",
         "json": {
             "model": "nvidia/nemotron-3-nano-4b",
-            "input": "Rewrite ship this after QA signs off",
+            "messages": [
+                {"role": "system", "content": "Return only the transformed output."},
+                {"role": "user", "content": "Rewrite ship this after QA signs off"},
+            ],
             "temperature": 0.1,
             "stream": False,
-            "store": False,
-            "system_prompt": "Return only the transformed output.",
-            "max_output_tokens": 192,
-            "context_length": 4096,
+            "max_tokens": 192,
+            "context_length": 8192,
             "reasoning": "off",
         },
         "headers": {"Content-Type": "application/json"},
@@ -167,7 +168,7 @@ def test_lmstudio_native_chat_disables_reasoning_after_first_rejection(monkeypat
     assert "reasoning" not in calls[2]["json"]
 
 
-def test_lmstudio_native_chat_resolves_placeholder_model_to_downloaded_local_model(monkeypatch):
+def test_lmstudio_native_chat_resolves_placeholder_model_to_default_gemma_only(monkeypatch):
     calls: list[dict[str, object]] = []
 
     def fake_request(method, url, json=None, headers=None, timeout=None, stream=None):
@@ -185,9 +186,10 @@ def test_lmstudio_native_chat_resolves_placeholder_model_to_downloaded_local_mod
                     "models": [
                         {
                             "type": "llm",
-                            "key": "vision-only-model",
+                            "key": "google/gemma-4-e4b",
+                            "display_name": "Gemma 4 E4B",
                             "capabilities": {"vision": True},
-                            "loaded_instances": [],
+                            "loaded_instances": [{"id": "loaded"}],
                         },
                         {
                             "type": "llm",
@@ -221,7 +223,43 @@ def test_lmstudio_native_chat_resolves_placeholder_model_to_downloaded_local_mod
         "headers": {"Content-Type": "application/json"},
         "timeout": 2.0,
     }
-    assert calls[1]["json"]["model"] == "qwen2.5-0.5b-instruct-mlx"
+    assert calls[1]["json"]["model"] == "google/gemma-4-e4b"
+
+
+def test_lmstudio_native_chat_placeholder_rejects_other_auto_discovered_models(monkeypatch):
+    def fake_request(method, url, json=None, headers=None, timeout=None, stream=None):
+        if method == "GET":
+            return FakeResponse(
+                200,
+                {
+                    "models": [
+                        {
+                            "type": "llm",
+                            "key": "qwen2.5-0.5b-instruct-mlx",
+                            "display_name": "Qwen2.5 0.5B Instruct",
+                            "trainedForToolUse": True,
+                            "paramsString": "0.5B",
+                            "maxContextLength": 32768,
+                            "capabilities": {"vision": False},
+                            "loaded_instances": [{"id": "loaded"}],
+                        },
+                    ]
+                },
+            )
+        raise AssertionError("Chat request should not run when Gemma 4 E4B is unavailable.")
+
+    monkeypatch.setattr("providers.lmstudio_native.requests.request", fake_request)
+
+    llm = LMStudioNativeChat(
+        model="local-model",
+        temperature=0.0,
+    )
+
+    try:
+        llm.invoke("Hello from local LM Studio.")
+        raise AssertionError("Expected placeholder model resolution to fail without Gemma 4 E4B.")
+    except RuntimeError as exc:
+        assert "Gemma 4 E4B is the default LM Studio Smart model" in str(exc)
 
 
 def test_lmstudio_native_chat_strips_leaked_thinking_blocks(monkeypatch):
@@ -308,14 +346,13 @@ def test_lmstudio_native_chat_streams_message_deltas_and_chat_end(monkeypatch):
         return FakeStreamingResponse(
             200,
             lines=[
-                'event: message.delta',
-                'data: {"type":"message.delta","content":"Please ship this once "}',
+                'data: {"choices":[{"delta":{"content":"Please ship this once "},"finish_reason":null}]}',
                 '',
-                'event: message.delta',
-                'data: {"type":"message.delta","content":"QA has approved it."}',
+                'data: {"choices":[{"delta":{"content":"QA has approved it."},"finish_reason":null}]}',
                 '',
-                'event: chat.end',
-                'data: {"type":"chat.end","result":{"output":[{"type":"message","content":"Please ship this once QA has approved it."}]}}',
+                'data: {"choices":[{"delta":{},"finish_reason":"stop"}]}',
+                '',
+                'data: [DONE]',
                 '',
             ],
         )
@@ -332,17 +369,17 @@ def test_lmstudio_native_chat_streams_message_deltas_and_chat_end(monkeypatch):
 
     assert [event["event"] for event in events] == ["message.delta", "message.delta", "chat.end"]
     assert events[0]["data"]["content"] == "Please ship this once "
-    assert events[-1]["data"]["result"]["output"][0]["content"] == "Please ship this once QA has approved it."
+    assert events[-1]["data"]["result"]["choices"][0]["message"]["content"] == "Please ship this once QA has approved it."
     assert calls == [{
         "method": "POST",
-        "url": "http://localhost:1234/api/v1/chat",
+        "url": "http://localhost:1234/v1/chat/completions",
         "json": {
             "model": "nvidia/nemotron-3-nano-4b",
-            "input": "Rewrite this politely.",
+            "messages": [{"role": "user", "content": "Rewrite this politely."}],
             "temperature": 0.1,
             "stream": True,
-            "store": False,
-            "max_output_tokens": 192,
+            "max_tokens": 192,
+            "context_length": 8192,
         },
         "headers": {"Content-Type": "application/json"},
         "timeout": 30.0,
@@ -375,3 +412,66 @@ def test_lmstudio_native_chat_raises_clear_error_for_missing_model(monkeypatch):
         raise AssertionError("Expected a RuntimeError for a missing LM Studio model.")
     except RuntimeError as exc:
         assert "The selected LM Studio model 'missing-model' is not available." in str(exc)
+
+
+def test_lmstudio_native_chat_auto_loads_selected_model_before_retry(monkeypatch):
+    calls: list[dict[str, object]] = []
+    request_responses = iter([
+        FakeResponse(
+            400,
+            {
+                "error": {
+                    "message": "Failed to load model \"google/gemma-4-e4b\". Error: Failed to load model.",
+                    "param": "model",
+                }
+            },
+        ),
+        FakeResponse(200, {"status": "loaded"}),
+        FakeResponse(200, {"output": [{"type": "message", "content": "Loaded reply."}]}),
+    ])
+
+    def fake_request(method, url, json=None, headers=None, timeout=None, stream=None):
+        calls.append({
+            "method": method,
+            "url": url,
+            "json": json,
+            "headers": headers,
+            "timeout": timeout,
+        })
+        return next(request_responses)
+
+    class CatalogResponse:
+        status_code = 200
+
+        @staticmethod
+        def json():
+            return {
+                "models": [
+                    {
+                        "type": "llm",
+                        "key": "google/gemma-4-e4b",
+                        "display_name": "Gemma 4 E4B",
+                        "paramsString": "4B",
+                        "loaded_instances": [],
+                        "capabilities": {"vision": True},
+                    }
+                ]
+            }
+
+    monkeypatch.setattr("providers.model_discovery.requests.get", lambda *args, **kwargs: CatalogResponse())
+
+    monkeypatch.setattr("providers.lmstudio_native.requests.request", fake_request)
+
+    llm = LMStudioNativeChat(
+        model="google/gemma-4-e4b",
+        temperature=0.0,
+    )
+
+    response = llm.invoke("Hello")
+
+    assert response.content == "Loaded reply."
+    assert calls[0]["url"] == "http://localhost:1234/v1/chat/completions"
+    assert calls[1]["url"] == "http://localhost:1234/api/v1/models/load"
+    assert calls[1]["json"]["model"] == "google/gemma-4-e4b"
+    assert calls[1]["json"]["context_length"] == 8192
+    assert calls[2]["url"] == "http://localhost:1234/v1/chat/completions"

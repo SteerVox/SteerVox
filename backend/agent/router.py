@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, Iterable, Optional, Tuple
 
+from agent.computer_use_planner import detect_computer_use_trigger
 from agent.skills.models import SkillDefinition
 from agent.smart_models import RoutingDecision, SkillReference, SmartIntent, SmartLane
 
@@ -578,6 +579,28 @@ class LocalIntentRouter:
                 output_mode="plain_text",
             )
 
+        computer_use_trigger = detect_computer_use_trigger(
+            transcript=normalized_transcript,
+            requested_skill_id=requested_skill.id,
+            effective_skill_id=effective_skill.id,
+        )
+        if computer_use_trigger is not None:
+            return self._decision(
+                SmartIntent.COMPUTER_USE,
+                SmartLane.DETERMINISTIC,
+                0.97 if computer_use_trigger == "explicit_mode" else 0.9,
+                (
+                    "The explicit Computer Use skill routes this request into the SteerVox-owned computer-use lane."
+                    if computer_use_trigger == "explicit_mode"
+                    else "A short imperative voice command matched the SteerVox computer-use route."
+                ),
+                requested_skill,
+                effective_skill,
+                fallback_applied,
+                fallback_reason,
+                output_mode="plain_text",
+            )
+
         if TRANSLATE_PATTERN.search(lowered):
             return self._decision(
                 SmartIntent.TRANSLATE,
@@ -658,6 +681,19 @@ class LocalIntentRouter:
                 fallback_applied,
                 fallback_reason,
                 output_mode="code",
+            )
+
+        if effective_skill.id == "system_local_task":
+            return self._decision(
+                SmartIntent.LOCAL_TASK,
+                SmartLane.DETERMINISTIC,
+                0.96,
+                "The explicit local-task skill routes this request into the reviewed local task shell.",
+                requested_skill,
+                effective_skill,
+                fallback_applied,
+                fallback_reason,
+                output_mode="command",
             )
 
         if _is_terminal_context(context) or effective_skill.output_mode == "command" or _looks_like_shell_command(normalized_transcript):

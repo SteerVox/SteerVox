@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, clipboard, Notification, nativeImage, systemPreferences, screen, shell, dialog, desktopCapturer, type OpenDialogOptions, type SaveDialogOptions } from 'electron'
+import { app, BrowserWindow, ipcMain, Tray, Menu, globalShortcut, clipboard, Notification, nativeImage, systemPreferences, screen, shell, dialog, desktopCapturer, type OpenDialogOptions, type SaveDialogOptions, type WebContents } from 'electron'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 import { spawn, execFile } from 'node:child_process'
@@ -33,6 +33,7 @@ import {
 } from './liveTranscriptionRouting'
 import { NativeSpeechHelperManager, type NativeSpeechEvent } from './nativeSpeechHelper'
 import { createPasteDeliveryCoordinator } from './pasteDelivery'
+import { resolveDeferredHotkeyStopExecution, resolveDeferredHotkeyStopRequest } from './recordingHotkeyFlow'
 import { HOTKEY_TOGGLE_REARM_MS, resolveRecordingToggleDecision } from './recordingToggle'
 import {
     buildSemanticMemoryNoPythonMessage,
@@ -65,6 +66,20 @@ if (!fs.existsSync(logDir)) fs.mkdirSync(logDir, { recursive: true })
 const electronLogStr = fs.createWriteStream(path.join(logDir, ELECTRON_LOG_FILE_NAME), { flags: 'a' })
 
 type RecordingMode = 'dictation' | 'smart_transform'
+type BackendProxyMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
+type BackendProxyRequest = {
+    method: BackendProxyMethod
+    path: string
+    headers?: Record<string, string>
+    body?: unknown
+    timeout?: number
+}
+
+type BackendRuntimeEventPayload = {
+    type: string
+    data?: string
+    message?: string
+}
 
 type MlxInstallState = {
     supported: boolean
@@ -128,6 +143,8 @@ type SemanticMemoryRuntimeStateFile = {
     runtime_path?: string | null
     last_checked_at?: string | null
 }
+
+type DesktopLogKind = 'backend' | 'electron'
 
 type SemanticRuntimeInstallAttemptResult =
     | {
@@ -285,14 +302,26 @@ type LocalAppState = {
     backgroundOnly: boolean
 }
 
+type UsageStatsSnapshot = {
+    dictation_runs?: number
+    smart_runs?: number
+}
+
 type LaunchContext = {
     is_packaged: boolean
     backend_base_url: string
     app_version: string
+    release_channel: 'development' | 'public_beta'
+    trust_posture: 'development' | 'unsigned_beta'
+    manual_updates_only: boolean
+    supported_architecture: 'apple_silicon'
     install_location: 'applications' | 'disk_image' | 'other' | 'development'
     should_prompt_move_to_applications: boolean
     onboarding_completed: boolean
     onboarding_dismissed: boolean
+    dictation_tested: boolean
+    smart_tested: boolean
+    onboarding_blocker: string | null
     background_only: boolean
     log_paths: {
         backend: string
@@ -488,6 +517,7 @@ let widgetHideFallbackTimer: NodeJS.Timeout | null = null
 let isAppQuitting = false
 let isTogglingRecording = false;
 let hotkeyToggleRearmUntil = 0
+let pendingHotkeyStop = false
 const widgetExpansionReasons = new Set<WidgetExpansionReason>()
 const pendingDeepLinks: string[] = []
 let appState: LocalAppState = {
@@ -572,6 +602,7 @@ let cachedCaptureAudioConfig: { value: CaptureAudioConfig; cachedAt: number } | 
 let localLiveTranscriptionState: LocalLiveTranscriptionState | null = null
 let localLivePreviewState: StableLivePreviewState | null = null
 const backendClient = backendLifecycle.client
+const backendRuntimeEventStreams = new Map<number, AbortController>()
 let pendingRecordingSubmission: PendingRecordingSubmission | null = null
 let captureState: CaptureState = {
     is_recording: false,
@@ -599,7 +630,167 @@ const pasteDeliveryCoordinator = createPasteDeliveryCoordinator({
     log: logToFile,
 })
 
+function validateBackendProxyRequest(value: unknown): BackendProxyRequest {
+    if (!value || typeof value !== 'object') {
+        throw new Error('Backend request payload must be an object.')
+    }
+
+    const request = value as Partial<BackendProxyRequest>
+    if (!['GET', 'POST', 'PUT', 'DELETE'].includes(String(request.method))) {
+        throw new Error('Backend request method is not supported.')
+    }
+    if (typeof request.path !== 'string' || !request.path.startsWith('/') || request.path.startsWith('//')) {
+        throw new Error('Backend request path must be a local absolute path.')
+    }
+    if (request.headers !== undefined) {
+        if (typeof request.headers !== 'object' || request.headers === null || Array.isArray(request.headers)) {
+            throw new Error('Backend request headers must be an object.')
+        }
+        for (const [name, headerValue] of Object.entries(request.headers)) {
+            if (typeof name !== 'string' || typeof headerValue !== 'string') {
+                throw new Error('Backend request headers must be strings.')
+            }
+        }
+    }
+    if (request.timeout !== undefined && (!Number.isFinite(request.timeout) || request.timeout < 0)) {
+        throw new Error('Backend request timeout must be a non-negative number.')
+    }
+
+    return {
+        method: request.method as BackendProxyMethod,
+        path: request.path,
+        headers: request.headers,
+        body: request.body,
+        timeout: request.timeout,
+    }
+}
+
+async function parseBackendProxyResponse(response: Response) {
+    const contentType = response.headers.get('content-type') || ''
+    if (contentType.includes('application/json')) {
+        try {
+            return await response.json()
+        } catch {
+            return null
+        }
+    }
+
+    const text = await response.text()
+    return text.length ? text : null
+}
+
+function stopBackendRuntimeEventStream(webContentsId: number) {
+    const existing = backendRuntimeEventStreams.get(webContentsId)
+    if (!existing) return
+    existing.abort()
+    backendRuntimeEventStreams.delete(webContentsId)
+}
+
+function sendBackendRuntimeEvent(webContents: WebContents, payload: BackendRuntimeEventPayload) {
+    if (webContents.isDestroyed()) return
+    webContents.send('backend-runtime-event', payload)
+}
+
+function consumeRuntimeEventBlock(block: string): BackendRuntimeEventPayload | null {
+    if (!block.trim()) return null
+
+    let eventType = 'message'
+    const dataLines: string[] = []
+
+    block.split('\n').forEach((line) => {
+        if (!line || line.startsWith(':')) return
+
+        const separatorIndex = line.indexOf(':')
+        const field = separatorIndex === -1 ? line : line.slice(0, separatorIndex)
+        const rawValue = separatorIndex === -1 ? '' : line.slice(separatorIndex + 1)
+        const value = rawValue.startsWith(' ') ? rawValue.slice(1) : rawValue
+
+        if (field === 'event') {
+            eventType = value || 'message'
+            return
+        }
+        if (field === 'data') {
+            dataLines.push(value)
+        }
+    })
+
+    if (!dataLines.length) return null
+    return { type: eventType, data: dataLines.join('\n') }
+}
+
+function flushRuntimeEventBuffer(webContents: WebContents, buffer: string, flushAll = false) {
+    const normalized = buffer.replace(/\r/g, '')
+    const blocks = normalized.split('\n\n')
+    const remainder = flushAll ? '' : (blocks.pop() ?? '')
+
+    blocks.forEach((block) => {
+        const payload = consumeRuntimeEventBlock(block)
+        if (payload) sendBackendRuntimeEvent(webContents, payload)
+    })
+
+    if (flushAll && remainder) {
+        const payload = consumeRuntimeEventBlock(remainder)
+        if (payload) sendBackendRuntimeEvent(webContents, payload)
+    }
+
+    return remainder
+}
+
+async function startBackendRuntimeEventStream(webContents: WebContents) {
+    stopBackendRuntimeEventStream(webContents.id)
+
+    const controller = new AbortController()
+    backendRuntimeEventStreams.set(webContents.id, controller)
+    const onDestroyed = () => stopBackendRuntimeEventStream(webContents.id)
+    webContents.once('destroyed', onDestroyed)
+
+    try {
+        const response = await backendClient.request('/events/runtime', {
+            method: 'GET',
+            signal: controller.signal,
+        })
+
+        if (!response.ok) {
+            throw new Error(`Realtime connection failed (${response.status}).`)
+        }
+        if (!response.body) {
+            throw new Error('Realtime connection returned no event stream body.')
+        }
+
+        sendBackendRuntimeEvent(webContents, { type: 'open' })
+
+        const reader = response.body.getReader()
+        const decoder = new TextDecoder()
+        let buffer = ''
+
+        while (!controller.signal.aborted) {
+            const { done, value } = await reader.read()
+            if (done) break
+            buffer += decoder.decode(value, { stream: true })
+            buffer = flushRuntimeEventBuffer(webContents, buffer)
+        }
+
+        buffer += decoder.decode()
+        flushRuntimeEventBuffer(webContents, buffer, true)
+
+        if (!controller.signal.aborted) {
+            sendBackendRuntimeEvent(webContents, { type: 'error', message: 'Realtime connection ended.' })
+        }
+    } catch (error) {
+        if (!controller.signal.aborted) {
+            const message = error instanceof Error ? error.message : String(error)
+            sendBackendRuntimeEvent(webContents, { type: 'error', message })
+        }
+    } finally {
+        webContents.off('destroyed', onDestroyed)
+        if (backendRuntimeEventStreams.get(webContents.id) === controller) {
+            backendRuntimeEventStreams.delete(webContents.id)
+        }
+    }
+}
+
 function resetRecordingCaptureState(error: string | null = null) {
+    pendingHotkeyStop = false
     clearLocalLiveTranscriptionState()
     setCaptureState({
         is_recording: false,
@@ -613,6 +804,59 @@ function resetRecordingCaptureState(error: string | null = null) {
         fallback_to_default: false,
         fallback_notice: null,
     })
+}
+
+function queuePendingHotkeyStop(mode: RecordingMode) {
+    const resolution = resolveDeferredHotkeyStopRequest({
+        requestedMode: mode,
+        activeRecordingMode: activeCaptureSession?.kind === 'recording' ? activeCaptureSession.mode : null,
+        pendingStopQueued: pendingHotkeyStop,
+    })
+
+    if (resolution.kind === 'ignore') {
+        if (resolution.reason === 'already_queued') {
+            logToFile(`Hotkey stop already queued while ${mode} was starting. Ignoring duplicate press.`)
+        } else {
+            const activeMode = activeCaptureSession?.kind === 'recording' ? activeCaptureSession.mode : mode
+            logToFile(`Hotkey toggle ignored because ${activeMode} is still starting and mode switches are not queued.`)
+        }
+        return
+    }
+
+    pendingHotkeyStop = true
+    logToFile(`Hotkey stop deferred until ${resolution.mode} recording becomes active.`)
+}
+
+function clearPendingHotkeyStop(reason?: string) {
+    if (!pendingHotkeyStop) {
+        return
+    }
+
+    pendingHotkeyStop = false
+    if (reason) {
+        logToFile(reason)
+    }
+}
+
+async function executeDeferredHotkeyStop(mode: RecordingMode) {
+    const resolution = resolveDeferredHotkeyStopExecution({
+        pendingStopQueued: pendingHotkeyStop,
+        activeCaptureKind: activeCaptureSession?.kind ?? null,
+        captureIsRecording: captureState.is_recording,
+    })
+
+    if (resolution.kind === 'noop') {
+        return
+    }
+
+    if (resolution.kind === 'clear') {
+        clearPendingHotkeyStop(`Deferred hotkey stop cleared because ${mode} never reached an active recording state.`)
+        return
+    }
+
+    pendingHotkeyStop = false
+    logToFile(`Executing deferred hotkey stop for ${mode}.`)
+    await toggleRecording(mode, 'hotkey')
 }
 
 function isWindowAlive(win: BrowserWindow | null): win is BrowserWindow {
@@ -743,6 +987,73 @@ function tailLines(raw: string, limit: number = 250) {
         .slice(-limit)
 }
 
+function resolveDesktopLogPath(kind: DesktopLogKind) {
+    return path.join(logDir, kind === 'backend' ? BACKEND_LOG_FILE_NAME : ELECTRON_LOG_FILE_NAME)
+}
+
+function readDesktopLogTail(kind: DesktopLogKind) {
+    const logPath = resolveDesktopLogPath(kind)
+    if (!fs.existsSync(logPath)) {
+        return {
+            kind,
+            path: logPath,
+            exists: false,
+            updated_at: null,
+            content: '',
+            truncated: false,
+            error: null,
+        }
+    }
+
+    try {
+        const stats = fs.statSync(logPath)
+        const maxBytes = 256 * 1024
+        const bytesToRead = Math.min(stats.size, maxBytes)
+        let raw = ''
+
+        if (bytesToRead > 0) {
+            const start = Math.max(0, stats.size - bytesToRead)
+            const fd = fs.openSync(logPath, 'r')
+            try {
+                const buffer = Buffer.alloc(bytesToRead)
+                fs.readSync(fd, buffer, 0, bytesToRead, start)
+                raw = buffer.toString('utf8')
+            } finally {
+                fs.closeSync(fd)
+            }
+        }
+
+        if (bytesToRead < stats.size) {
+            const firstNewline = raw.indexOf('\n')
+            if (firstNewline >= 0) {
+                raw = raw.slice(firstNewline + 1)
+            }
+        }
+
+        return {
+            kind,
+            path: logPath,
+            exists: true,
+            updated_at: Number.isFinite(stats.mtimeMs) ? Math.round(stats.mtimeMs) : null,
+            content: tailLines(raw, 400).join('\n'),
+            truncated: bytesToRead < stats.size,
+            error: null,
+        }
+    } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        logToFile(`Failed to read ${kind} log tail: ${detail}`)
+        return {
+            kind,
+            path: logPath,
+            exists: true,
+            updated_at: null,
+            content: '',
+            truncated: false,
+            error: detail,
+        }
+    }
+}
+
 function readJsonFile<T>(filePath: string): T | null {
     try {
         const parsed = JSON.parse(fs.readFileSync(filePath, 'utf8')) as T
@@ -858,15 +1169,83 @@ function getInstallLocation(): LaunchContext['install_location'] {
     return 'other'
 }
 
-function getLaunchContext(): LaunchContext {
+async function readPackagedOnboardingStatus(installLocation: LaunchContext['install_location']) {
+    let dictationTested = false
+    let smartTested = false
+
+    try {
+        const usage = await backendClient.getJson<UsageStatsSnapshot>('/usage', { timeoutMs: 1200 })
+        dictationTested = Number(usage?.dictation_runs || 0) > 0
+        smartTested = Number(usage?.smart_runs || 0) > 0
+    } catch (error) {
+        logToFile(`Launch context could not read usage stats: ${error instanceof Error ? error.message : String(error)}`)
+    }
+
+    if (!app.isPackaged) {
+        return {
+            dictation_tested: dictationTested,
+            smart_tested: smartTested,
+            onboarding_blocker: null,
+        }
+    }
+
+    if (installLocation !== 'applications') {
+        return {
+            dictation_tested: dictationTested,
+            smart_tested: smartTested,
+            onboarding_blocker: installLocation === 'disk_image'
+                ? `Move ${DISPLAY_NAME} from the downloaded DMG into /Applications, then reopen it from there before finishing setup.`
+                : `Move ${DISPLAY_NAME} into /Applications before finishing setup so permissions and helper paths stay stable.`,
+        }
+    }
+
+    if (!dictationTested) {
+        return {
+            dictation_tested: false,
+            smart_tested: smartTested,
+            onboarding_blocker: 'Run one successful Dictate pass before finishing setup.',
+        }
+    }
+
+    if (!smartTested) {
+        return {
+            dictation_tested: true,
+            smart_tested: false,
+            onboarding_blocker: 'Run one successful Smart pass before finishing setup.',
+        }
+    }
+
+    return {
+        dictation_tested: true,
+        smart_tested: true,
+        onboarding_blocker: null,
+    }
+}
+
+async function getLaunchContext(): Promise<LaunchContext> {
+    const installLocation = getInstallLocation()
+    const packagedOnboarding = await readPackagedOnboardingStatus(installLocation)
+    const packagedRequirementsMet = !app.isPackaged || (
+        installLocation === 'applications'
+        && packagedOnboarding.dictation_tested
+        && packagedOnboarding.smart_tested
+    )
+
     return {
         is_packaged: app.isPackaged,
         backend_base_url: backendLifecycle.getBaseUrl(),
         app_version: app.getVersion(),
-        install_location: getInstallLocation(),
-        should_prompt_move_to_applications: app.isPackaged && getInstallLocation() !== 'applications',
-        onboarding_completed: appState.onboardingCompleted,
+        release_channel: app.isPackaged ? 'public_beta' : 'development',
+        trust_posture: app.isPackaged ? 'unsigned_beta' : 'development',
+        manual_updates_only: app.isPackaged,
+        supported_architecture: 'apple_silicon',
+        install_location: installLocation,
+        should_prompt_move_to_applications: app.isPackaged && installLocation !== 'applications',
+        onboarding_completed: appState.onboardingCompleted && packagedRequirementsMet,
         onboarding_dismissed: appState.onboardingDismissed,
+        dictation_tested: packagedOnboarding.dictation_tested,
+        smart_tested: packagedOnboarding.smart_tested,
+        onboarding_blocker: packagedOnboarding.onboarding_blocker,
         background_only: appState.backgroundOnly,
         log_paths: {
             backend: resolveAppHomePath('logs', BACKEND_LOG_FILE_NAME),
@@ -3252,6 +3631,11 @@ function registerHotkeys() {
                 return
             }
 
+            if (decision.kind === 'defer_stop') {
+                queuePendingHotkeyStop(mode)
+                return
+            }
+
             const shouldRevealWidget = !captureState.is_recording && (!activeCaptureSession || activeCaptureSession.kind !== 'recording')
             if (shouldRevealWidget) {
                 requestWidgetOpen('hotkey')
@@ -3713,6 +4097,11 @@ async function toggleRecording(mode: RecordingMode, source: 'hotkey' | 'ui' = 'u
         return
     }
 
+    if (decision.kind === 'defer_stop') {
+        queuePendingHotkeyStop(mode)
+        return
+    }
+
     if (decision.kind === 'reset_stale_capture_state') {
         logToFile('Capture state reported an active recording without a live session. Resetting stale state before continuing.')
         resetRecordingCaptureState(null)
@@ -3720,15 +4109,27 @@ async function toggleRecording(mode: RecordingMode, source: 'hotkey' | 'ui' = 'u
     }
 
     isTogglingRecording = true
+    let result: unknown
 
     try {
         if (decision.kind === 'stop') {
-            return await stopRecording()
+            clearPendingHotkeyStop()
+            result = await stopRecording()
+        } else {
+            result = await startRecording(mode)
         }
-        return await startRecording(mode)
+    } catch (error) {
+        clearPendingHotkeyStop(`Deferred hotkey stop cleared because ${mode} failed to transition cleanly.`)
+        throw error
     } finally {
         isTogglingRecording = false
     }
+
+    if (decision.kind === 'start' && source === 'hotkey') {
+        await executeDeferredHotkeyStop(mode)
+    }
+
+    return result
 }
 
 async function startMicTest(deviceId?: string | null, deviceLabel?: string | null) {
@@ -3966,12 +4367,94 @@ ipcMain.handle('get-backend-base-url', () => {
 })
 
 ipcMain.handle('get-backend-request-context', () => {
-    return backendClient.getRequestContext()
+    const baseUrl = backendLifecycle.getBaseUrl()
+    if (!baseUrl) {
+        throw new Error('The local backend URL is not ready yet.')
+    }
+    return { baseUrl, headers: {} }
 })
 
-ipcMain.handle('open-logs-directory', () => {
-    shell.showItemInFolder(path.join(logDir, 'electron.log'))
+ipcMain.handle('backend-request', async (_event, rawRequest: unknown) => {
+    const request = validateBackendProxyRequest(rawRequest)
+    const headers = new Headers(request.headers)
+    let body: string | undefined
+
+    if (request.method === 'POST' || request.method === 'PUT') {
+        if (!headers.has('Content-Type')) {
+            headers.set('Content-Type', 'application/json')
+        }
+        body = request.body === undefined ? undefined : JSON.stringify(request.body)
+    }
+
+    const response = await backendClient.request(
+        request.path,
+        {
+            method: request.method,
+            headers,
+            body,
+        },
+        { timeoutMs: request.timeout },
+    )
+    const responseHeaders: Record<string, string> = {}
+    response.headers.forEach((value, name) => {
+        responseHeaders[name] = value
+    })
+
+    return {
+        ok: response.ok,
+        status: response.status,
+        headers: responseHeaders,
+        data: await parseBackendProxyResponse(response),
+    }
+})
+
+ipcMain.handle('backend-runtime-events-start', (event) => {
+    void startBackendRuntimeEventStream(event.sender)
+    return { status: 'started' }
+})
+
+ipcMain.handle('backend-runtime-events-stop', (event) => {
+    stopBackendRuntimeEventStream(event.sender.id)
+    return { status: 'stopped' }
+})
+
+ipcMain.handle('open-logs-directory', async () => {
+    const logPaths = [
+        path.join(logDir, BACKEND_LOG_FILE_NAME),
+        path.join(logDir, ELECTRON_LOG_FILE_NAME),
+    ]
+
+    let openedAny = false
+    for (const logPath of logPaths) {
+        try {
+            if (!fs.existsSync(logPath)) {
+                fs.closeSync(fs.openSync(logPath, 'a'))
+            }
+            const result = await shell.openPath(logPath)
+            if (!result) {
+                openedAny = true
+                continue
+            }
+        } catch (error) {
+            logToFile(`Failed to open log file ${logPath}: ${error instanceof Error ? error.message : String(error)}`)
+        }
+
+        shell.showItemInFolder(logPath)
+        openedAny = true
+    }
+
+    if (!openedAny) {
+        await shell.openPath(logDir)
+    }
+
     return { status: 'opened' }
+})
+
+ipcMain.handle('read-log-tail', (_event, kind: DesktopLogKind) => {
+    if (kind !== 'backend' && kind !== 'electron') {
+        throw new Error(`Unsupported log kind: ${kind}`)
+    }
+    return readDesktopLogTail(kind)
 })
 
 ipcMain.handle('report-renderer-error', (_event, payload: { message: string; stack?: string | null; component_stack?: string | null; route?: string | null }) => {
@@ -3985,11 +4468,11 @@ ipcMain.handle('report-renderer-error', (_event, payload: { message: string; sta
     return { status: 'logged' }
 })
 
-ipcMain.handle('get-launch-context', () => {
+ipcMain.handle('get-launch-context', async () => {
     return getLaunchContext()
 })
 
-ipcMain.handle('set-background-only', (_event, enabled: boolean) => {
+ipcMain.handle('set-background-only', async (_event, enabled: boolean) => {
     if (isPackagedTrayOnlyMac()) {
         return getLaunchContext()
     }
@@ -4088,12 +4571,17 @@ ipcMain.handle('restart-backend', async () => {
     return { status: 'restarted' }
 })
 
-ipcMain.handle('dismiss-packaged-onboarding', () => {
+ipcMain.handle('dismiss-packaged-onboarding', async () => {
     updateAppState({ onboardingDismissed: true })
     return getLaunchContext()
 })
 
-ipcMain.handle('complete-packaged-onboarding', () => {
+ipcMain.handle('complete-packaged-onboarding', async () => {
+    const launchContext = await getLaunchContext()
+    if (launchContext.onboarding_blocker) {
+        return launchContext
+    }
+
     updateAppState({
         onboardingCompleted: true,
         onboardingDismissed: true,

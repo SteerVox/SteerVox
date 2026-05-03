@@ -135,8 +135,10 @@ export function createBackendLifecycleService(options: BackendLifecycleOptions) 
   }
 
   function getBundledFfmpegBinDir() {
-    if (!options.isPackaged) return null
-    return path.join(options.resourcesPath, 'ffmpeg', 'bin')
+    if (options.isPackaged) {
+      return path.join(options.resourcesPath, 'ffmpeg', 'bin')
+    }
+    return path.join(options.appRoot, 'build', 'ffmpeg-runtime', 'bin')
   }
 
   function buildBackendEnvironment(port: number) {

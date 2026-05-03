@@ -68,6 +68,36 @@ def test_smart_router_uses_local_request_tuning_for_lmstudio(monkeypatch):
     }
 
 
+def test_smart_router_raises_4b_lmstudio_models_to_8192_context(monkeypatch):
+    captured = {}
+
+    def fake_get_llm(provider, model, temperature, **kwargs):
+        captured.update({
+            "provider": provider,
+            "model": model,
+            "temperature": temperature,
+            **kwargs,
+        })
+        return object()
+
+    monkeypatch.setattr(smart_router_agent_module.LLMFactory, "get_llm", fake_get_llm)
+
+    agent = SmartRouterAgent(provider="lmstudio", model="nvidia/nemotron-3-nano-4b", temperature=0.0)
+    llm = agent._build_llm()
+
+    assert llm is not None
+    assert captured == {
+        "provider": "lmstudio",
+        "model": "nvidia/nemotron-3-nano-4b",
+        "temperature": 0.0,
+        "timeout": smart_router_agent_module.ROUTER_TIMEOUT_SECONDS,
+        "max_retries": 0,
+        "max_tokens": 600,
+        "context_length": 8192,
+        "reasoning_mode": "off",
+    }
+
+
 def test_smart_router_gate_triggers_for_ambiguous_llm_route():
     generic_skill = SkillDefinition(
         id="custom_generic",

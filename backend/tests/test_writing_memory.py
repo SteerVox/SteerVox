@@ -2,6 +2,7 @@ import sqlite3
 
 import pytest
 
+from library_models import InboxNote
 from writing_memory import (
     DictionaryEntryPayload,
     MAX_HISTORY_ITEMS,
@@ -132,6 +133,79 @@ def test_writing_tools_store_history_round_trip(tmp_path):
 
     store.delete_history_item(item.id)
     assert store.list_history() == []
+
+
+def test_writing_tools_store_persists_notes_and_projects_library_items(tmp_path):
+    store = WritingToolsStore(path=tmp_path / "writing_memory.sqlite3")
+
+    note = store.append_note(
+        InboxNote(
+            id="note-1",
+            text="Remember the Atlas handoff.",
+            created_at="2026-04-17T08:00:00Z",
+            app_name="Notes",
+            bundle_id=None,
+            window_title="Today",
+            page_title=None,
+            url_host=None,
+            url_path=None,
+            surface_kind="multiline_input",
+            source_mode="dictation",
+            source_kind="spoken_text",
+            output_mode="plain_text",
+        )
+    )
+    history = store.record_history(
+        mode="smart_transform",
+        transcript="make this concise",
+        final_output="A concise version of the update.",
+        telemetry={"output_mode": "plain_text", "skill_used": {"id": "system_dictation", "name": "Dictation"}},
+        context={"app_name": "Slack", "window_title": "eng-updates", "surface_kind": "chat_input"},
+        stt_provider="mlx-whisper",
+        stt_model="mlx-community/whisper-base-mlx",
+        llm_provider="lmstudio",
+        llm_model="local-model",
+    )
+
+    assert store.list_notes()[0].id == note.id
+
+    items = store.list_library_items()
+    assert [item.source_type for item in items] == ["history", "note"]
+    assert items[0].metadata.skill_id == "system_dictation"
+    assert items[1].metadata.source_kind == "spoken_text"
+
+    memory_sources = store.list_library_memory_sources()
+    assert {source.source_type for source in memory_sources} == {"history", "note"}
+    assert any(source.source_id == str(history.id) for source in memory_sources)
+
+
+def test_writing_tools_store_migrates_legacy_inbox_jsonl_once(tmp_path, monkeypatch):
+    app_home = tmp_path / ".steervox"
+    app_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("STEERVOX_HOME", str(app_home))
+    legacy_path = app_home / "inbox.jsonl"
+    legacy_path.write_text(
+        "\n".join(
+            [
+                '{"id":"note-1","text":"Atlas update","created_at":"2026-04-17T08:00:00Z","app_name":"Notes","source_mode":"dictation","source_kind":"spoken_text"}',
+                '{"id":"note-2","text":"Run summary","created_at":"2026-04-17T08:05:00Z","app_name":"SteerVox","source_mode":"local_task","source_kind":"task_result"}',
+                '{not valid json}',
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    store = WritingToolsStore(path=app_home / "writing_memory.sqlite3")
+    notes = store.list_notes()
+    assert [note.id for note in notes] == ["note-2", "note-1"]
+
+    backups = list(app_home.glob("inbox.jsonl.migrated-*.bak"))
+    assert len(backups) == 1
+    assert not legacy_path.exists()
+
+    reloaded = WritingToolsStore(path=app_home / "writing_memory.sqlite3")
+    assert [note.id for note in reloaded.list_notes()] == ["note-2", "note-1"]
+    assert len(list(app_home.glob("inbox.jsonl.migrated-*.bak"))) == 1
 
 
 def test_writing_tools_store_surfaces_duplicate_entries_cleanly(tmp_path):

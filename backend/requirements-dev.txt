@@ -1,3 +1,4 @@
 -r requirements.txt
+-r requirements-mlx.txt
 pytest==9.0.2
 pyinstaller==6.19.0

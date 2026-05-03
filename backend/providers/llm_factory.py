@@ -1,3 +1,4 @@
+import json
 import threading
 from typing import Any
 
@@ -51,7 +52,7 @@ def _build_anthropic_kwargs(
 
 class LLMFactory:
     _cache_lock = threading.Lock()
-    _client_cache: dict[tuple[str, str, float, str | None, float | None, int | None, int | None, int | None, str | None], Any] = {}
+    _client_cache: dict[tuple[str, str, float, str | None, float | None, int | None, int | None, int | None, str | None, str | None], Any] = {}
 
     @staticmethod
     def get_llm(
@@ -64,12 +65,14 @@ class LLMFactory:
         max_tokens: int | None = None,
         context_length: int | None = None,
         reasoning_mode: str | None = None,
+        response_format: dict[str, Any] | None = None,
     ) -> Any:
         provider = provider.lower()
         api_key = SecretsManager.get_api_key(provider)
         if not api_key and provider not in {"lmstudio"}:
             logger.warning(f"{provider} API key not found in keychain. LLM initialization may fail or use environment variables.")
-        cache_key = (provider, model, float(temperature), api_key, timeout, max_retries, max_tokens, context_length, reasoning_mode)
+        response_format_key = json.dumps(response_format, sort_keys=True, separators=(",", ":")) if response_format else None
+        cache_key = (provider, model, float(temperature), api_key, timeout, max_retries, max_tokens, context_length, reasoning_mode, response_format_key)
         with LLMFactory._cache_lock:
             cached = LLMFactory._client_cache.get(cache_key)
         if cached is not None:
@@ -131,6 +134,7 @@ class LLMFactory:
                 max_tokens=max_tokens,
                 context_length=context_length,
                 reasoning_mode=reasoning_mode,
+                response_format=response_format,
             )
         elif provider == "anthropic":
             from langchain_anthropic import ChatAnthropic

@@ -1,6 +1,7 @@
 import type { LibraryFilter } from '../types'
 
-export type SettingsStepRoute = 'voice' | 'rewrite' | 'privacy' | 'advanced'
+export type SettingsStepRoute = 'voice' | 'rewrite' | 'access' | 'privacy' | 'advanced'
+const SETTINGS_STEP_ROUTES = new Set<SettingsStepRoute>(['voice', 'rewrite', 'access', 'privacy', 'advanced'])
 
 export const APP_ROUTES = {
   home: '/',
@@ -9,8 +10,15 @@ export const APP_ROUTES = {
   settings: '/settings',
 } as const
 
-export function buildSettingsRoute(step: SettingsStepRoute = 'voice') {
-  return step === 'voice' ? APP_ROUTES.settings : `${APP_ROUTES.settings}?step=${step}`
+export function buildSettingsRoute(step: SettingsStepRoute = 'access') {
+  return step === 'access' ? APP_ROUTES.settings : `${APP_ROUTES.settings}?step=${step}`
+}
+
+export function parseSettingsStepRoute(step: string | null | undefined): SettingsStepRoute {
+  if (step && SETTINGS_STEP_ROUTES.has(step as SettingsStepRoute)) {
+    return step as SettingsStepRoute
+  }
+  return 'access'
 }
 
 export function buildLibraryRoute(filter: LibraryFilter = 'all') {

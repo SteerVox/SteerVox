@@ -3,6 +3,8 @@ import type {
   AppLaunchContext,
   BackendBootState,
   CaptureState,
+  DesktopLogKind,
+  DesktopLogSnapshot,
   LiveTranscription,
   MlxInstallState,
   PasteResult,
@@ -15,6 +17,29 @@ import type {
 } from '../types'
 import type { BackendRequestContext } from '../../shared/localBackendAuth'
 
+export type BackendProxyMethod = 'GET' | 'POST' | 'PUT' | 'DELETE'
+
+export type BackendProxyRequest = {
+  method: BackendProxyMethod
+  path: string
+  headers?: Record<string, string>
+  body?: unknown
+  timeout?: number
+}
+
+export type BackendProxyResponse<T = unknown> = {
+  ok: boolean
+  status: number
+  headers: Record<string, string>
+  data: T | null
+}
+
+export type BackendRuntimeEventPayload = {
+  type: string
+  data?: string
+  message?: string
+}
+
 export interface WindowControls {
   minimize: () => void
   close: () => void
@@ -24,6 +49,10 @@ export interface WindowControls {
   getPlatform: () => Promise<string>
   getBackendBaseUrl: () => Promise<string>
   getBackendRequestContext: () => Promise<BackendRequestContext>
+  backendRequest: <T = unknown>(request: BackendProxyRequest) => Promise<BackendProxyResponse<T>>
+  startBackendRuntimeEvents: () => Promise<{ status: string }>
+  stopBackendRuntimeEvents: () => Promise<{ status: string }>
+  onBackendRuntimeEvent: (callback: (payload: BackendRuntimeEventPayload) => void) => () => void
   getLaunchContext: () => Promise<AppLaunchContext>
   setBackgroundOnly: (enabled: boolean) => Promise<AppLaunchContext>
   hideTransientWindows: (source?: WidgetPresentationSource) => Promise<{ status: string }>
@@ -59,6 +88,7 @@ export interface WindowControls {
   repairSemanticMemoryRuntime: () => Promise<SemanticMemoryInstallState>
   revealSemanticMemoryRuntime: () => Promise<{ status: string }>
   openLogsDirectory: () => Promise<{ status: string }>
+  readLogTail: (kind: DesktopLogKind) => Promise<DesktopLogSnapshot>
   reportRendererError: (payload: { message: string; stack?: string | null; component_stack?: string | null; route?: string | null }) => Promise<{ status: string }>
   getInboxWindowState: () => Promise<{ open: boolean }>
   pasteText: (payload: { id: string; text: string; options?: { restoreClipboard?: boolean } }) => Promise<PasteResult>

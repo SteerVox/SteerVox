@@ -57,7 +57,11 @@ function isCodeNote(note: InboxNote) {
 }
 
 function formatSourceLabel(note: InboxNote) {
-  const modeLabel = note.source_mode === 'smart_transform' ? 'Smart' : 'Dictation'
+  const modeLabel = note.source_mode === 'smart_transform'
+    ? 'Smart'
+    : note.source_mode === 'local_task'
+      ? 'Local task'
+      : 'Dictation'
   if (note.source_kind === 'selection_text') return `${modeLabel} • Selection`
   if (note.source_kind === 'clipboard_text') return `${modeLabel} • Clipboard`
   if (note.source_kind === 'transformed_output') return `${modeLabel} • Transformed`

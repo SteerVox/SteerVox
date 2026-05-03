@@ -3,10 +3,11 @@ from __future__ import annotations
 import re
 import time
 from difflib import SequenceMatcher
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Literal, Optional
 
 from action_execution import ActionResolutionError, ReviewedActionBuilder
 from action_routing import ExternalTextSource, resolve_external_text
+from agent.computer_use_planner import ComputerUsePlanner, detect_computer_use_trigger
 from agent.router import (
     LocalIntentRouter,
     apply_deterministic_transform,
@@ -19,12 +20,24 @@ from agent.router import (
     normalize_whitespace,
     spoken_points_to_bullets,
 )
+from agent.source_material import extract_inline_source_request
 from agent.skills.manager import SkillManager
 from agent.skills.models import SkillDefinition
-from agent.smart_models import AutoActionPayload, PendingActionReviewPayload, SmartIntent, SmartLane, SmartModeResult, SmartRunTelemetry
+from agent.smart_models import (
+    AutoActionPayload,
+    LocalTaskRequestPayload,
+    PendingActionReviewPayload,
+    SkillReference,
+    SmartIntent,
+    SmartLane,
+    SmartModeResult,
+    SmartRunTelemetry,
+)
 from agent.smart_router_agent import SmartRouterAgent, should_use_smart_router_model
 from agent.supervisor import SupervisorAgent
 from command_control import apply_format_contract, enforce_surface_contract
+from local_task_shell import evaluate_local_command_policy, normalize_task_command_request
+from local_task_shell.models import LocalTaskStep
 from utils.logger import get_logger
 
 logger = get_logger()
@@ -67,7 +80,6 @@ INLINE_SOURCE_REQUEST_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^(clean this up)\s+(.+)$", re.IGNORECASE),
 )
 
-
 class SmartModeProcessor:
     def __init__(
         self,
@@ -88,6 +100,11 @@ class SmartModeProcessor:
         self.router = router or LocalIntentRouter()
         self.smart_router_agent = smart_router_agent
         self.reviewed_action_builder = ReviewedActionBuilder(provider=provider, model=model, temperature=temperature)
+        self.computer_use_planner = ComputerUsePlanner(
+            provider=provider,
+            model=model,
+            temperature=temperature,
+        )
 
     def process(
         self,
@@ -153,6 +170,20 @@ class SmartModeProcessor:
             context=context,
         )
 
+        selection_available = bool(selection_text and selection_text.strip())
+        clipboard_available = bool(clipboard_text and clipboard_text.strip())
+        external_text = resolve_external_text(selection_text, clipboard_text)
+        computer_use_trigger = detect_computer_use_trigger(
+            transcript=transcript,
+            requested_skill_id=requested_skill.id,
+            effective_skill_id=effective_skill.id,
+        )
+        smart_profile = "default"
+        profile_limit_reason: Optional[str] = None
+        structured_output_mode = "none"
+        structured_output_schema: Optional[str] = None
+        structured_output_failure_kind = "none"
+
         decision = self.router.plan(
             transcript,
             context,
@@ -162,10 +193,6 @@ class SmartModeProcessor:
             fallback_reason=fallback_reason,
             raw_fallback=raw_fallback,
         )
-
-        external_text = resolve_external_text(selection_text, clipboard_text)
-        selection_available = bool(selection_text and selection_text.strip())
-        clipboard_available = bool(clipboard_text and clipboard_text.strip())
         planner_resolver = "local"
         planner_model_attempted = False
         planner_model_error: Optional[str] = None
@@ -197,7 +224,7 @@ class SmartModeProcessor:
                     "reason": model_result.reason,
                     "output_mode": self._resolve_output_mode(model_result.intent, effective_skill),
                 })
-                planner_resolver = "groq"
+                planner_resolver = "model"
             else:
                 planner_model_error = model_error or "Smart router model returned an unsafe routing decision."
 
@@ -205,6 +232,13 @@ class SmartModeProcessor:
             action_skill = self.skill_manager.get_skill("system_action_execution")
             if action_skill is not None:
                 effective_skill = action_skill
+        elif decision.intent == SmartIntent.COMPUTER_USE:
+            computer_use_skill = self.skill_manager.get_skill("system_computer_use")
+            if computer_use_skill is not None:
+                effective_skill = computer_use_skill
+                decision = decision.model_copy(update={
+                    "skill_used": SkillReference(id=computer_use_skill.id, name=computer_use_skill.name),
+                })
 
         final_text = transcript.strip()
         context_fields_sent: list[str] = []
@@ -245,9 +279,12 @@ class SmartModeProcessor:
             })
 
         pending_action_review: PendingActionReviewPayload | None = None
+        local_task_request: LocalTaskRequestPayload | None = None
         auto_action: AutoActionPayload | None = None
         action_error: str | None = None
         action_error_kind: Literal["resolution", "execution"] | None = None
+        refusal_message: str | None = None
+        computer_use_plan_kind: Literal["desktop_action", "local_task", "multi_step", "refusal"] | None = None
         llm_transcript = transcript
         if decision.intent == SmartIntent.ACTION_EXECUTION:
             if not actions_enabled:
@@ -282,6 +319,110 @@ class SmartModeProcessor:
                             auto_action = None
                             action_error = "Experimental media controls are turned off in Advanced settings."
                             action_error_kind = "resolution"
+            final_text = ""
+        elif decision.intent == SmartIntent.COMPUTER_USE:
+            computer_use_plan = self.computer_use_planner.plan(
+                transcript=transcript,
+                context=effective_context,
+                trigger=computer_use_trigger or "explicit_mode",
+                selection_text=selection_text,
+                clipboard_text=clipboard_text,
+            )
+            if computer_use_plan.model_attempted:
+                planner_model_attempted = True
+                planner_provider = self.provider
+                planner_model = self.model
+                planner_resolver = "model"
+            computer_use_plan_kind = computer_use_plan.kind
+            decision = decision.model_copy(update={
+                "reason": computer_use_plan.reason,
+            })
+            if computer_use_plan.kind == "desktop_action":
+                if not actions_enabled:
+                    action_error = "Desktop actions are disabled in Advanced settings."
+                    action_error_kind = "resolution"
+                else:
+                    action_skill = self.skill_manager.get_skill("system_action_execution") or effective_skill
+                    try:
+                        built_action = self.reviewed_action_builder.build(
+                            transcript=transcript,
+                            context=effective_context,
+                            skill=action_skill,
+                        )
+                    except ActionResolutionError as exc:
+                        action_error = str(exc).strip() or "The requested desktop action could not be resolved safely."
+                        action_error_kind = "resolution"
+                    except RuntimeError as exc:
+                        action_error = str(exc).strip() or "Computer Use could not convert that request into a safe desktop action."
+                        action_error_kind = "resolution"
+                    else:
+                        if built_action.pending_review is not None:
+                            pending_action_review = PendingActionReviewPayload.model_validate(
+                                built_action.pending_review.model_dump(mode="json")
+                            )
+                        if built_action.auto_action is not None:
+                            auto_action = AutoActionPayload.model_validate(
+                                built_action.auto_action.model_dump(mode="json")
+                            )
+                            if (
+                                auto_action.action_type in {"play_pause", "next_track", "previous_track"}
+                                and not experimental_media_controls_enabled
+                            ):
+                                auto_action = None
+                                action_error = "Experimental media controls are turned off in Advanced settings."
+                                action_error_kind = "resolution"
+            elif computer_use_plan.kind == "local_task":
+                if not computer_use_plan.command:
+                    action_error = "Computer Use could not resolve a runnable local task command."
+                    action_error_kind = "resolution"
+                else:
+                    local_task_request = LocalTaskRequestPayload(
+                        request_text=transcript.strip(),
+                        command=computer_use_plan.command,
+                        cwd=effective_context.get("workspace_root"),
+                        title=effective_skill.name,
+                        source_intent="computer_use",
+                    )
+            elif computer_use_plan.kind == "multi_step":
+                try:
+                    local_task_request = self._build_multi_step_local_task_request(
+                        transcript=transcript,
+                        context=effective_context,
+                        effective_skill=effective_skill,
+                        steps=computer_use_plan.steps,
+                        plan_summary=computer_use_plan.plan_summary,
+                        experimental_media_controls_enabled=experimental_media_controls_enabled,
+                    )
+                except (ActionResolutionError, RuntimeError) as exc:
+                    action_error = str(exc).strip() or "Computer Use could not build a safe multi-step local plan."
+                    action_error_kind = "resolution"
+            else:
+                refusal_message = computer_use_plan.refusal_message or computer_use_plan.reason
+            final_text = ""
+        elif decision.intent == SmartIntent.LOCAL_TASK:
+            command_text, request_operations = normalize_task_command_request(transcript)
+            if command_text != transcript:
+                deterministic_operations.extend(
+                    operation for operation in request_operations if operation not in deterministic_operations
+                )
+            command_text, applied_operations = apply_deterministic_transform(
+                SmartIntent.TERMINAL_COMMAND,
+                command_text,
+            )
+            deterministic_operations.extend(
+                operation for operation in applied_operations if operation not in deterministic_operations
+            )
+            if not command_text.strip():
+                action_error = "The local task request did not contain a runnable local command."
+                action_error_kind = "resolution"
+            else:
+                local_task_request = LocalTaskRequestPayload(
+                    request_text=transcript.strip(),
+                    command=command_text.strip(),
+                    cwd=effective_context.get("workspace_root"),
+                    title=effective_skill.name,
+                    source_intent="local_task",
+                )
             final_text = ""
         elif decision.lane.value == "passthrough":
             final_text = transcript.strip()
@@ -318,7 +459,12 @@ class SmartModeProcessor:
                 preview_callback=preview_callback,
             )
             llm_timeout_budget_ms = response.timeout_budget_ms
+            structured_output_mode = getattr(response, "structured_output_mode", structured_output_mode)
+            structured_output_schema = getattr(response, "structured_output_schema", structured_output_schema)
+            structured_output_failure_kind = getattr(response, "structured_output_failure_kind", structured_output_failure_kind)
             if response.error:
+                if structured_output_mode == "json_schema" and structured_output_failure_kind == "none":
+                    structured_output_failure_kind = "transport_error"
                 timeout_detected = response.timeout_triggered or self._is_lmstudio_timeout_error(response.error) or self._is_remote_provider_timeout_error(response.error)
                 fallback_text, fallback_operations = self._fallback_llm_error(
                     decision=decision,
@@ -453,6 +599,8 @@ class SmartModeProcessor:
             command_operations_applied=list(command_operations_applied or []),
             format_contract=format_contract,
             surface_contract_applied=surface_contract_applied,
+            smart_profile=smart_profile,  # type: ignore[arg-type]
+            profile_limit_reason=profile_limit_reason,
             provider=self.provider if decision.lane.value == "llm" else None,
             model=self.model if decision.lane.value == "llm" else None,
             domain_id=domain_id,
@@ -476,6 +624,9 @@ class SmartModeProcessor:
             llm_timeout_triggered=llm_timeout_triggered,
             llm_fallback_applied=llm_fallback_applied,
             llm_fallback_reason=llm_fallback_reason,
+            structured_output_mode=structured_output_mode,  # type: ignore[arg-type]
+            structured_output_schema=structured_output_schema,
+            structured_output_failure_kind=structured_output_failure_kind,  # type: ignore[arg-type]
             skill_router_resolver=skill_router_resolver,
             skill_router_model_attempted=skill_router_model_attempted,
             skill_router_model_error=skill_router_model_error,
@@ -491,6 +642,8 @@ class SmartModeProcessor:
             planner_model=planner_model,
             action_route=action_route,
             action_resolver=action_resolver,
+            computer_use_trigger=computer_use_trigger,
+            computer_use_plan_kind=computer_use_plan_kind,
             external_context_source=external_context_source.value,
             selection_available=selection_available,
             selection_used=selection_used,
@@ -528,9 +681,11 @@ class SmartModeProcessor:
             deterministic_operations=deterministic_operations,
             alternatives=[],
             pending_action_review=pending_action_review,
+            local_task_request=local_task_request,
             auto_action=auto_action,
             action_error=action_error,
             action_error_kind=action_error_kind,
+            refusal_message=refusal_message,
             telemetry=telemetry,
         )
 
@@ -690,11 +845,122 @@ class SmartModeProcessor:
         )
 
     def _should_attempt_smart_router(self, decision) -> bool:
-        if self.provider.lower() == "lmstudio" and (
-            self.smart_router_agent is None or self.smart_router_agent.provider.lower() != "lmstudio"
-        ):
+        if self.provider.lower() == "lmstudio":
             return False
         return should_use_smart_router_model(decision, mode="smart_transform")
+
+    def _build_multi_step_local_task_request(
+        self,
+        *,
+        transcript: str,
+        context: Dict[str, Any],
+        effective_skill: SkillDefinition,
+        steps: list[Any],
+        plan_summary: Optional[str],
+        experimental_media_controls_enabled: bool,
+    ) -> LocalTaskRequestPayload:
+        compiled_steps: list[LocalTaskStep] = []
+        cwd = context.get("workspace_root")
+        action_skill = self.skill_manager.get_skill("system_action_execution") or effective_skill
+
+        for index, planned_step in enumerate(steps, start=1):
+            step_id = f"step-{index}"
+            if planned_step.kind == "shell_command":
+                command_text = str(planned_step.request or "").strip()
+                decision = evaluate_local_command_policy(
+                    command_text,
+                    cwd=cwd,
+                )
+                if not decision.allowed or not decision.normalized_command:
+                    raise RuntimeError(decision.reason or "A multi-step shell command was blocked by local policy.")
+                compiled_steps.append(
+                    LocalTaskStep(
+                        id=step_id,
+                        kind="shell_command",
+                        title=planned_step.title or f"Run step {index}",
+                        summary=planned_step.summary or f"Run {decision.normalized_command}",
+                        status="pending",
+                        command=decision.normalized_command,
+                        cwd=decision.cwd,
+                        language="shell",
+                        script=decision.normalized_command,
+                        review_required=True,
+                    )
+                )
+                continue
+
+            if planned_step.kind == "desktop_action":
+                built_action = self.reviewed_action_builder.build_planned_step(
+                    planned_step=planned_step,
+                    context=context,
+                    skill=action_skill,
+                )
+                if built_action.pending_review is not None:
+                    review = PendingActionReviewPayload.model_validate(
+                        built_action.pending_review.model_dump(mode="json")
+                    )
+                    compiled_steps.append(
+                        LocalTaskStep(
+                            id=step_id,
+                            kind="desktop_action",
+                            title=review.title,
+                            summary=review.summary,
+                            status="pending",
+                            language="applescript",
+                            script=review.script,
+                            review_required=True,
+                            execution_mode="reviewed",
+                            action_type=review.action_type,
+                        )
+                    )
+                    continue
+
+                if built_action.auto_action is not None:
+                    auto = AutoActionPayload.model_validate(
+                        built_action.auto_action.model_dump(mode="json")
+                    )
+                    if (
+                        auto.action_type in {"play_pause", "next_track", "previous_track"}
+                        and not experimental_media_controls_enabled
+                    ):
+                        raise RuntimeError("Experimental media controls are turned off in Advanced settings.")
+                    compiled_steps.append(
+                        LocalTaskStep(
+                            id=step_id,
+                            kind="desktop_action",
+                            title=auto.title,
+                            summary=auto.summary,
+                            status="pending",
+                            review_required=False,
+                            execution_mode="auto",
+                            action_type=auto.action_type,
+                            app_name=auto.app_name,
+                            bundle_id=auto.bundle_id,
+                            value_percent=auto.value_percent,
+                            target_label=auto.target_label,
+                            target_role=auto.target_role,
+                            ui_index=auto.ui_index,
+                        )
+                    )
+                    continue
+
+                raise RuntimeError("A planned desktop action could not be compiled into a runnable step.")
+
+            raise RuntimeError("Computer Use produced an unsupported multi-step action.")
+
+        if not compiled_steps:
+            raise RuntimeError("Computer Use could not build any runnable multi-step actions.")
+
+        return LocalTaskRequestPayload(
+            request_text=transcript.strip(),
+            command=None,
+            cwd=cwd,
+            title=effective_skill.name,
+            source_intent="computer_use",
+            run_kind="multi_step",
+            plan_summary=plan_summary or f"Execute {len(compiled_steps)} reviewed steps.",
+            steps=compiled_steps,
+        )
 
     def _resolve_effective_skill(
         self,
@@ -897,19 +1163,7 @@ class SmartModeProcessor:
         return "\n".join(rendered_segments), ["normalize_local_labeled_segments"]
 
     def _extract_inline_source_request(self, transcript: str) -> tuple[str, str] | None:
-        normalized = normalize_whitespace(transcript)
-        if not normalized:
-            return None
-
-        for pattern in INLINE_SOURCE_REQUEST_PATTERNS:
-            match = pattern.match(normalized)
-            if not match:
-                continue
-            instruction = normalize_whitespace(match.group(1))
-            source_text = normalize_whitespace(match.group(2))
-            if instruction and source_text:
-                return instruction, source_text
-        return None
+        return extract_inline_source_request(transcript)
 
     def _looks_like_instruction_echo(self, final_text: str, transcript: str) -> bool:
         normalized_output = normalize_whitespace(final_text).lower()

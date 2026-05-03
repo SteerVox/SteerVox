@@ -12,8 +12,18 @@ function hasNotaryCredentials() {
 export default async function notarizeApp(context) {
   if (context.electronPlatformName !== 'darwin') return
 
+  const releaseChannel = process.env.STEERVOX_RELEASE_CHANNEL || 'development'
+
+  if (releaseChannel === 'public-beta') {
+    console.log('[afterSign] Public beta channel detected. Skipping notarization by design for the website-distributed unsigned beta.')
+    return
+  }
+
   if (!hasNotaryCredentials()) {
-    console.log('[afterSign] Notarization credentials are missing. Skipping notarization.')
+    if (releaseChannel === 'signed') {
+      throw new Error('Signed macOS release requested but notarization credentials are missing.')
+    }
+    console.log('[afterSign] Development packaging detected without notarization credentials. Skipping notarization.')
     return
   }
 

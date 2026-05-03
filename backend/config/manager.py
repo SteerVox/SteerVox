@@ -3,9 +3,16 @@ import os
 import tempfile
 from pathlib import Path
 
-from .models import AppConfig
+from .models import AppConfig, DEFAULT_LMSTUDIO_MODEL_ID, LMSTUDIO_LEGACY_PLACEHOLDER_MODEL_ID
 from utils.branding import EXPERIMENTAL_MEDIA_DEFAULT_ENV_VAR
 from utils.paths import get_app_home, safe_chmod
+
+DEFAULT_NVIDIA_LLM_MODEL_ID = "minimaxai/minimax-m2.7"
+LEGACY_NVIDIA_DEFAULT_MODEL_IDS = {
+    "moonshotai/kimi-k2-instruct-0905",
+    "moonshotai/kimi-k2-instruct",
+    "moonshotai/kimi-k2.5",
+}
 
 class ConfigManager:
     """
@@ -41,15 +48,50 @@ class ConfigManager:
         payload = AppConfig().model_dump()
         payload.setdefault("actions", {})
         payload["actions"]["experimental_media_controls"] = self._resolve_experimental_media_default()
-        return payload
+        return self._normalize_config_payload(payload)
 
-    def _apply_dynamic_defaults(self, data: dict) -> dict:
+    def _normalize_config_payload(self, data: dict) -> dict:
         next_data = dict(data or {})
         actions = dict(next_data.get("actions") or {})
         if "experimental_media_controls" not in actions:
             actions["experimental_media_controls"] = self._resolve_experimental_media_default()
         next_data["actions"] = actions
+
+        llm = dict(next_data.get("llm") or {})
+        llm_provider = str(llm.get("provider") or AppConfig().llm.provider).strip() or AppConfig().llm.provider
+        llm_model = str(llm.get("model") or AppConfig().llm.model).strip() or AppConfig().llm.model
+        if llm_provider.lower() == "lmstudio" and llm_model == LMSTUDIO_LEGACY_PLACEHOLDER_MODEL_ID:
+            llm_model = DEFAULT_LMSTUDIO_MODEL_ID
+        routing = dict(llm.get("routing") or {})
+        routing["provider"] = llm_provider
+        routing["model"] = llm_model
+        llm["provider"] = llm_provider
+        llm["model"] = llm_model
+        llm["routing"] = routing
+        next_data["llm"] = llm
+
+        vision = dict(next_data.get("vision") or {})
+        vision_model = vision.get("model")
+        if isinstance(vision_model, str) and vision_model.strip() == LMSTUDIO_LEGACY_PLACEHOLDER_MODEL_ID:
+            vision["model"] = DEFAULT_LMSTUDIO_MODEL_ID
+        next_data["vision"] = vision
         return next_data
+
+    def _normalize_loaded_config_payload(self, data: dict) -> dict:
+        normalized = self._normalize_config_payload(data)
+        llm = dict(normalized.get("llm") or {})
+        llm_provider = str(llm.get("provider") or "").strip().lower()
+        llm_model = str(llm.get("model") or "").strip()
+
+        if llm_provider == "nvidia" and llm_model in LEGACY_NVIDIA_DEFAULT_MODEL_IDS:
+            llm["model"] = DEFAULT_NVIDIA_LLM_MODEL_ID
+            routing = dict(llm.get("routing") or {})
+            routing["provider"] = "nvidia"
+            routing["model"] = DEFAULT_NVIDIA_LLM_MODEL_ID
+            llm["routing"] = routing
+            normalized["llm"] = llm
+
+        return normalized
 
     def _save_raw(self, data: dict) -> bool:
         try:
@@ -74,7 +116,7 @@ class ConfigManager:
         try:
             with open(self.CONFIG_FILE, 'r') as f:
                 data = json.load(f)
-            loaded_data = self._apply_dynamic_defaults(data)
+            loaded_data = self._normalize_loaded_config_payload(data)
             self._config = AppConfig(**loaded_data)
             normalized = self._config.model_dump()
             if normalized != loaded_data:
@@ -107,6 +149,7 @@ class ConfigManager:
             return d
             
         updated_data = pretty_deep_update(current_data, new_data)
+        updated_data = self._normalize_config_payload(updated_data)
         
         try:
             # Validate through Pydantic

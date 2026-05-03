@@ -148,9 +148,74 @@ def test_reviewed_action_builder_resolves_near_match_apps_to_installed_catalog_e
     assert "\nreopen\nactivate\n" in result.pending_review.script
 
 
-def test_reviewed_action_builder_uses_llm_tiebreak_for_ambiguous_app_matches(monkeypatch):
+def test_reviewed_action_builder_resolves_finder_from_system_app_catalog_entries():
     builder = ReviewedActionBuilder(
         provider="lmstudio",
+        model="demo",
+        temperature=0.0,
+        app_catalog=FakeAppCatalog([
+            _app_record("Finder", "com.apple.finder", "/System/Library/CoreServices/Finder.app"),
+        ]),
+    )
+
+    result = builder.build(
+        transcript="open finder",
+        context={},
+        skill=DefaultSkills.ACTION_EXECUTION,
+    )
+
+    assert result.pending_review is not None
+    assert result.pending_review.action_type == "open_app"
+    assert result.pending_review.summary == "Open Finder."
+    assert 'tell application id "com.apple.finder"' in result.pending_review.script
+
+
+def test_reviewed_action_builder_strips_follow_up_clause_from_open_app_request():
+    builder = ReviewedActionBuilder(
+        provider="lmstudio",
+        model="demo",
+        temperature=0.0,
+        app_catalog=FakeAppCatalog([
+            _app_record("Finder", "com.apple.finder", "/System/Library/CoreServices/Finder.app"),
+        ]),
+    )
+
+    result = builder.build(
+        transcript="open finder and go to downloads folder",
+        context={},
+        skill=DefaultSkills.ACTION_EXECUTION,
+    )
+
+    assert result.pending_review is not None
+    assert result.pending_review.action_type == "open_app"
+    assert result.pending_review.summary == "Open Finder."
+
+
+def test_reviewed_action_builder_handles_polite_open_app_request():
+    builder = ReviewedActionBuilder(
+        provider="lmstudio",
+        model="demo",
+        temperature=0.0,
+        app_catalog=FakeAppCatalog([
+            _app_record("Google Chrome", "com.google.Chrome", "/Applications/Google Chrome.app"),
+        ]),
+    )
+
+    result = builder.build(
+        transcript="could you please open Chrome for me?",
+        context={},
+        skill=DefaultSkills.ACTION_EXECUTION,
+    )
+
+    assert result.pending_review is not None
+    assert result.pending_review.action_type == "open_app"
+    assert result.pending_review.summary == "Open Google Chrome."
+    assert 'tell application id "com.google.Chrome"' in result.pending_review.script
+
+
+def test_reviewed_action_builder_uses_llm_tiebreak_for_ambiguous_app_matches(monkeypatch):
+    builder = ReviewedActionBuilder(
+        provider="groq",
         model="demo",
         temperature=0.0,
         app_catalog=FakeAppCatalog([
@@ -670,6 +735,111 @@ def test_execute_reviewed_action_runs_osascript_for_allowlisted_reviews(monkeypa
     assert calls["check"] is True
     assert calls["capture_output"] is True
     assert calls["text"] is True
+
+
+def test_reviewed_action_builder_compiles_structured_youtube_browser_steps():
+    builder = ReviewedActionBuilder(
+        provider="lmstudio",
+        model="demo",
+        temperature=0.0,
+        app_catalog=FakeAppCatalog([]),
+    )
+
+    open_url_step = type(
+        "PlannedStep",
+        (),
+        {
+            "action_type": "open_url",
+            "request": "open YouTube results",
+            "title": "Open YouTube search",
+            "summary": "Open YouTube search results for indie songs in Google Chrome.",
+            "app_name": "Google Chrome",
+            "browser_app_name": "Google Chrome",
+            "url": "https://www.youtube.com/results?search_query=indie+songs",
+            "site": "youtube",
+            "query": "indie songs",
+        },
+    )()
+    open_url_result = builder.build_planned_step(
+        planned_step=open_url_step,
+        context={"app_name": "Codex"},
+        skill=DefaultSkills.COMPUTER_USE,
+    )
+    assert open_url_result.pending_review is not None
+    assert open_url_result.pending_review.action_type == "open_url"
+    assert "youtube.com/results" in open_url_result.pending_review.script.lower()
+
+    playback_step = type(
+        "PlannedStep",
+        (),
+        {
+            "action_type": "youtube_ensure_playing",
+            "request": "start playback if paused",
+            "title": "Ensure playback",
+            "summary": "Start playback only if the current YouTube video is paused.",
+            "app_name": "Google Chrome",
+            "browser_app_name": "Google Chrome",
+            "site": "youtube",
+            "query": "indie songs",
+        },
+    )()
+    playback_result = builder.build_planned_step(
+        planned_step=playback_step,
+        context={"app_name": "Codex"},
+        skill=DefaultSkills.COMPUTER_USE,
+    )
+    assert playback_result.pending_review is not None
+    assert playback_result.pending_review.action_type == "youtube_ensure_playing"
+    assert "execute front window's active tab javascript" in playback_result.pending_review.script.lower()
+
+
+def test_reviewed_youtube_actions_reject_unsupported_browser():
+    builder = ReviewedActionBuilder(
+        provider="lmstudio",
+        model="demo",
+        temperature=0.0,
+        app_catalog=FakeAppCatalog([]),
+    )
+
+    planned_step = type(
+        "PlannedStep",
+        (),
+        {
+            "action_type": "youtube_open_first_result",
+            "request": "open the first YouTube result",
+            "title": "Open first result",
+            "summary": "Open the first YouTube result.",
+            "app_name": "Arc",
+            "browser_app_name": "Arc",
+            "site": "youtube",
+            "query": "indie songs",
+        },
+    )()
+
+    with pytest.raises(ActionResolutionError, match="not supported yet"):
+        builder.build_planned_step(
+            planned_step=planned_step,
+            context={"app_name": "Codex"},
+            skill=DefaultSkills.COMPUTER_USE,
+        )
+
+
+def test_validate_reviewed_youtube_action_accepts_allowlisted_script():
+    review = PendingActionReview(
+        run_id="review-youtube-1",
+        action_type="youtube_open_first_result",
+        title="Open first result",
+        summary="Open the first YouTube result.",
+        script=(
+            'tell application "Google Chrome"\n'
+            'activate\n'
+            'if (count of windows) = 0 then error "Google Chrome does not have an open browser window."\n'
+            'execute front window\'s active tab javascript "(() => { if (!location.hostname.includes(\'youtube.com\')) { throw new Error(\'Not on YouTube.\'); } const firstResult = document.querySelector(\'ytd-video-renderer a#video-title\'); if (!firstResult) { throw new Error(\'No YouTube search result available.\'); } firstResult.click(); return \'opened-first-result\'; })();"\n'
+            'end tell'
+        ),
+    )
+
+    assert validate_reviewed_action(review) is None
 
 
 def test_normalize_app_match_text_strips_hidden_format_characters():

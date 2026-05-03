@@ -16,6 +16,7 @@ except Exception as exc:  # pragma: no cover - exercised indirectly when depende
 
 from agent.smart_models import RoutingDecision, SmartIntent, SmartLane
 from providers.llm_factory import LLMFactory
+from providers.model_discovery import ModelDiscovery
 from security.secrets_manager import SecretsManager
 from utils.logger import get_logger
 
@@ -292,7 +293,7 @@ Candidate skills:
         if provider == "lmstudio":
             extra_kwargs.update({
                 "max_tokens": 600,
-                "context_length": 4096,
+                "context_length": ModelDiscovery.lmstudio_resolve_request_context_length(normalized_model, 4096),
                 "reasoning_mode": "off",
             })
         return LLMFactory.get_llm(

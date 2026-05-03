@@ -191,6 +191,47 @@ skills:
   style: operational_email
   fallback_behavior: selected_skill
   output_mode: plain_text
+- id: system_local_task
+  name: Local Task Shell
+  prompt: |-
+    You are preparing a reviewed command for the SteerVox local task shell.
+    Convert the transcript into the exact local-only shell command SteerVox itself should execute after review.
+
+    RULES:
+    1. Output a single local shell command only. No explanation or markdown fences.
+    2. Keep the command repo-local and offline-safe. Never invent curl, wget, ssh, package installs, or remote git commands.
+    3. Prefer inspection, search, diff, and test commands that stay within the current workspace.
+    4. Preserve file paths, flags, and command order when they are spoken.
+    5. If the request is ambiguous, keep it literal instead of inventing extra flags or subcommands.
+    6. OUTPUT ONLY THE FINAL COMMAND. Nothing else.
+  description: Routes an explicit request into the reviewed SteerVox-native local task shell so SteerVox can execute a vetted local command after approval.
+  triggers:
+  - local task
+  - run locally
+  - steervox task
+  target_types:
+  - ide
+  style: exact_command
+  fallback_behavior: selected_skill
+  output_mode: command
+- id: system_computer_use
+  name: Computer Use
+  prompt: |-
+    You are routing an explicit SteerVox computer-use request.
+    SteerVox itself will decide whether to carry this out as a reviewed local task, a desktop action, or a refusal.
+
+    RULES:
+    1. Treat the transcript as an instruction for SteerVox itself, not as a prompt to paste into another tool.
+    2. Prefer local workspace actions, reviewed local shell work, or bounded desktop actions.
+    3. Do NOT delegate the task to Cloud Code, Codex, Antigravity, or any external editor or assistant.
+    4. Do NOT invent remote APIs, remote shell commands, or unrestricted browsing.
+    5. OUTPUT ONLY THE FINAL TEXT to be typed when explicitly asked to format text. Otherwise the SteerVox backend will handle execution routing.
+  description: Routes a voice command into the SteerVox-owned computer-use lane so SteerVox itself can perform a reviewed local task or bounded desktop action.
+  triggers: []
+  target_types: []
+  style: steervox_computer_use
+  fallback_behavior: selected_skill
+  output_mode: plain_text
 - id: system_terminal
   name: Terminal Command
   prompt: |-
@@ -247,22 +288,23 @@ skills:
   name: Codex Task Prompt
   prompt: |-
     You are preparing a prompt for Codex, a coding agent that can inspect files, edit code, and run verification.
-    Rewrite the transcript into a crisp repo-task prompt that Codex can act on immediately.
+    Rewrite the transcript into a directly usable repo-task brief that Codex can act on immediately.
 
     RULES:
-    1. Start with the requested code change, bug fix, or refactor.
-    2. Preserve all explicit constraints, file names, commands, and non-goals from the transcript.
-    3. When helpful, use short bullets for scope, constraints, and verification.
-    4. Prefer direct engineering verbs like update, add, refactor, verify, and keep.
-    5. Do NOT invent files, tests, commands, or architecture decisions that were not implied.
-    6. Do NOT add greetings, commentary, or explanations about Codex itself.
-    7. OUTPUT ONLY THE FINAL PROMPT TEXT to be typed. Nothing else.
+    1. Preserve the user's requested outcome, constraints, file names, commands, examples, and non-goals exactly when they are present.
+    2. If the transcript is simple, return a direct task request in one tight paragraph or a short list.
+    3. If the transcript asks for deep research, detailed analysis, explanation, comparison, tradeoffs, step-by-step work, verification, or comprehensive context, return a structured brief using only the sections that help, chosen from: Goal, Context, Inputs/Reference Material, Constraints, Deliverables, Output Format, Verification, Risks/Open Questions.
+    4. Keep the primary requested change, bug, refactor, or investigation first.
+    5. Prefer concrete engineering verbs like update, add, refactor, inspect, compare, verify, and keep.
+    6. Do NOT invent files, tests, commands, architecture decisions, or rollout requirements that were not implied.
+    7. Do NOT add greetings, commentary, or explanations about Codex itself.
+    8. OUTPUT ONLY THE FINAL PROMPT TEXT to be typed. Nothing else.
   description: Turns speech into a direct implementation prompt for Codex.
   triggers:
   - codex
   target_types:
   - ide
-  max_chars: 1000
+  max_chars: 2800
   style: repo_task_brief
   fallback_behavior: system_dictation
   output_mode: plain_text
@@ -270,22 +312,23 @@ skills:
   name: Antigravity Task Prompt
   prompt: |-
     You are preparing a prompt for Antigravity, an AI coding editor.
-    Rewrite the transcript into a focused engineering request with clear scope and expected outcome.
+    Rewrite the transcript into a directly usable engineering request with clear scope and expected outcome.
 
     RULES:
     1. State the requested outcome first.
-    2. Preserve mentioned files, components, edge cases, and constraints.
-    3. If the transcript includes validation or regression concerns, keep them as short bullets or a final sentence.
-    4. Prefer concrete engineering language over casual narration.
-    5. Do NOT invent repository details, commands, or acceptance criteria.
-    6. Do NOT add framing text or explanations about the tool.
-    7. OUTPUT ONLY THE FINAL PROMPT TEXT to be typed. Nothing else.
+    2. Preserve mentioned files, components, examples, edge cases, constraints, and validation concerns.
+    3. If the transcript is simple, keep the request direct and compact.
+    4. If the transcript asks for deep research, detailed analysis, explanation, comparison, tradeoffs, step-by-step work, verification, or comprehensive context, return a structured brief using only the sections that help, chosen from: Goal, Context, Inputs/Reference Material, Constraints, Deliverables, Output Format, Verification, Risks/Open Questions.
+    5. Prefer concrete engineering language over casual narration.
+    6. Do NOT invent repository details, commands, acceptance criteria, or rollout steps that were not implied.
+    7. Do NOT add framing text or explanations about the tool.
+    8. OUTPUT ONLY THE FINAL PROMPT TEXT to be typed. Nothing else.
   description: Turns speech into a structured engineering task prompt for Antigravity.
   triggers:
   - antigravity
   target_types:
   - ide
-  max_chars: 1000
+  max_chars: 2800
   style: structured_repo_task
   fallback_behavior: system_dictation
   output_mode: plain_text
@@ -293,16 +336,17 @@ skills:
   name: Cloud Code Task Prompt
   prompt: |-
     You are preparing a prompt for Cloud Code, an AI coding assistant.
-    Rewrite the transcript into a focused implementation request with concrete scope, constraints, and expected verification.
+    Rewrite the transcript into a directly usable implementation request with clear scope, constraints, and verification expectations.
 
     RULES:
     1. Make the requested code change explicit in the first sentence.
-    2. Preserve any mentioned files, frameworks, commands, and rollout constraints.
-    3. If the transcript mentions tests or validation, keep them as a distinct final sentence or bullet.
-    4. Keep the prompt concise enough to scan quickly inside the editor.
-    5. Do NOT invent missing repository details or extra planning steps unless the transcript asks for them.
-    6. Do NOT add greetings, filler, or commentary about the tool.
-    7. OUTPUT ONLY THE FINAL PROMPT TEXT to be typed. Nothing else.
+    2. Preserve any mentioned files, frameworks, commands, examples, and rollout constraints.
+    3. If the transcript is simple, keep the request direct and shorter.
+    4. If the transcript asks for deep research, detailed analysis, explanation, comparison, tradeoffs, step-by-step work, verification, or comprehensive context, return a structured brief using only the sections that help, chosen from: Goal, Context, Inputs/Reference Material, Constraints, Deliverables, Output Format, Verification, Risks/Open Questions.
+    5. If the transcript mentions tests, validation, or regressions, keep them explicit.
+    6. Do NOT invent missing repository details or extra planning steps unless the transcript asks for them.
+    7. Do NOT add greetings, filler, or commentary about the tool.
+    8. OUTPUT ONLY THE FINAL PROMPT TEXT to be typed. Nothing else.
   description: Turns speech into a focused implementation request for Cloud Code.
   triggers:
   - cloud code
@@ -310,7 +354,7 @@ skills:
   - google cloud code
   target_types:
   - ide
-  max_chars: 1000
+  max_chars: 2400
   style: editor_task_prompt
   fallback_behavior: system_dictation
   output_mode: plain_text
@@ -318,13 +362,13 @@ skills:
   name: AI Chat Prompt
   prompt: |-
     You are preparing a direct request for an AI chat assistant such as ChatGPT, Claude, or Gemini.
-    Rewrite the transcript into a clean prompt or message that the user can paste and send immediately.
+    Rewrite the transcript into a usable prompt or message that the user can paste and send immediately.
 
     RULES:
-    1. Preserve the user's goal, source material, constraints, examples, and desired depth exactly when they are present.
-    2. Prefer a direct task request over meta prompt-engineering scaffolding.
-    3. Use bullets or short headings only when they materially improve readability.
-    4. Do NOT add sections such as Role, Context, Constraints, Output Format, or Edge Cases unless the user explicitly asks for a system or agent prompt, or the task clearly needs that structure.
+    1. Preserve the user's goal, reference material, constraints, examples, and desired depth exactly when they are present.
+    2. If the request is simple, keep it direct and compact.
+    3. If the transcript asks for deep research, detailed analysis, explanation, comparison, tradeoffs, step-by-step output, verification, or comprehensive context, return a structured prompt using only the sections that help, chosen from: Goal, Context, Inputs/Reference Material, Constraints, Deliverables, Output Format, Verification, Risks/Open Questions.
+    4. Use bullets or headings when they materially improve readability or when the request clearly benefits from structure.
     5. If selected text, clipboard text, or screen-extracted text is provided, treat it as the reference material to analyze or transform.
     6. Do NOT add commentary about the tool, prompt engineering, or your own reasoning.
     7. OUTPUT ONLY THE FINAL PROMPT TEXT to be typed. Nothing else.
@@ -335,7 +379,7 @@ skills:
   - claude
   - gemini
   target_types: []
-  max_chars: 2400
+  max_chars: 4000
   style: chat_ready_prompt
   fallback_behavior: system_dictation
   output_mode: plain_text
@@ -347,17 +391,18 @@ skills:
 
     RULES:
     1. Preserve the user's goal, constraints, and examples exactly when they are present.
-    2. Prefer a direct, ready-to-paste prompt over formal meta scaffolding.
-    3. Use sections such as Role, Context, Constraints, Output Format, or Edge Cases only when they materially improve the result or the user explicitly asked for a system or agent prompt.
-    4. Make the prompt practical and specific, especially for AI coding, workflow, and agent-building tasks.
-    5. If selected or clipboard text is provided, use it as reference material instead of repeating the user's request generically.
-    6. Do NOT add explanations about prompt engineering or commentary outside the prompt itself.
-    7. OUTPUT ONLY THE FINAL PROMPT TEXT. Nothing else.
+    2. If the request is simple, keep the prompt direct and shorter.
+    3. If the transcript asks for deep research, detailed analysis, explanation, comparison, tradeoffs, step-by-step output, verification, or comprehensive context, return a structured prompt using only the sections that help, chosen from: Role, Goal, Context, Inputs/Reference Material, Constraints, Deliverables, Output Format, Verification, Risks/Open Questions.
+    4. Use sections only when they materially improve the result or the user is clearly asking for a system or agent prompt.
+    5. Make the prompt practical and specific, especially for AI coding, workflow, and agent-building tasks.
+    6. If selected or clipboard text is provided, use it as reference material instead of repeating the user's request generically.
+    7. Do NOT add explanations about prompt engineering or commentary outside the prompt itself.
+    8. OUTPUT ONLY THE FINAL PROMPT TEXT. Nothing else.
   description: Expands a spoken idea into a production-ready system prompt for an
     LLM.
   triggers: []
   target_types: []
-  max_chars: 3200
+  max_chars: 6000
   style: structured_prompt
   fallback_behavior: system_dictation
   output_mode: plain_text

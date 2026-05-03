@@ -5,6 +5,10 @@ from fastapi import APIRouter, HTTPException
 from agent.skills.manager import SkillValidationError
 from agent.skills.models import SkillDefinition
 from api.state import BackendAppState
+from utils.logger import get_logger
+
+
+logger = get_logger()
 
 
 def build_skills_router(state: BackendAppState) -> APIRouter:
@@ -84,6 +88,10 @@ def build_skills_router(state: BackendAppState) -> APIRouter:
                 status_code=404,
                 detail=f"Inbox note '{note_id}' not found.",
             )
+        try:
+            state.rebuild_library_memory(reset_tombstones=False)
+        except RuntimeError as exc:
+            logger.warning("Failed to refresh local memory after inbox delete: %s", exc)
         revision = state.bump_runtime_revision("inbox")
         state.emit_runtime_event(
             "inbox_invalidated",

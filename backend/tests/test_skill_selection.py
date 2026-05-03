@@ -95,6 +95,36 @@ def test_active_selection_auto_routes_chatgpt_context_from_system_dictation():
     assert selection.skill_router_resolver == "local"
 
 
+def test_active_selection_keeps_imperative_codex_request_in_dictation_lane():
+    manager = SkillManager()
+
+    selection = resolve_active_skill_selection(
+        context={"app_name": "Codex", "window_title": "repo", "target_type": "ide"},
+        transcript="open Chrome and play indie songs on YouTube",
+        hotkeys=HotkeyConfig(default_skill_id="system_dictation", app_skill_defaults=[]),
+        skill_manager=manager,
+    )
+
+    assert selection.requested_skill_id == "system_dictation"
+    assert selection.skill_id == "system_dictation"
+    assert selection.auto_selected_skill_id is None
+
+
+def test_active_selection_still_routes_prompt_shaped_codex_request():
+    manager = SkillManager()
+
+    selection = resolve_active_skill_selection(
+        context={"app_name": "Codex", "window_title": "repo", "target_type": "ide"},
+        transcript="write a Codex prompt for this auth migration plan",
+        hotkeys=HotkeyConfig(default_skill_id="system_dictation", app_skill_defaults=[]),
+        skill_manager=manager,
+    )
+
+    assert selection.requested_skill_id == "system_dictation"
+    assert selection.skill_id == "system_codex_prompt"
+    assert selection.auto_selected_skill_id == "system_codex_prompt"
+
+
 def test_active_selection_auto_routes_social_post_context():
     manager = SkillManager()
 
@@ -257,3 +287,49 @@ def test_active_selection_uses_local_candidate_when_skill_router_model_errors():
     assert selection.skill_router_resolver == "local"
     assert selection.skill_router_model_attempted is True
     assert selection.skill_router_model_error == "router timeout"
+
+
+def test_active_selection_uses_cloud_code_prompt_for_cloud_code_app_context():
+    manager = SkillManager()
+
+    selection = resolve_active_skill_selection(
+        context={"app_name": "Cloud Code", "window_title": "SteerVox task brief"},
+        transcript="write me a prompt for the implementation plan",
+        hotkeys=HotkeyConfig(default_skill_id="system_dictation", app_skill_defaults=[]),
+        skill_manager=manager,
+    )
+
+    assert selection.skill_id == "system_cloud_code_prompt"
+    assert selection.requested_skill_id == "system_dictation"
+    assert selection.source == "global_default"
+    assert selection.auto_selected_skill_id == "system_cloud_code_prompt"
+
+
+def test_active_selection_does_not_auto_select_computer_use_for_cloud_code_context():
+    manager = SkillManager()
+    hotkeys = HotkeyConfig(
+        default_skill_id="system_dictation",
+        app_skill_defaults=[
+            {
+                "id": "cloud_code_app",
+                "app_label": "Cloud Code",
+                "bundle_id": None,
+                "url_host": None,
+                "app_name": "Cloud Code",
+                "skill_id": "system_cloud_code_prompt",
+                "enabled": True,
+            },
+        ],
+    )
+
+    selection = resolve_active_skill_selection(
+        context={"app_name": "Cloud Code", "window_title": "Implementation brief"},
+        transcript="write me an implementation prompt for this backend route",
+        hotkeys=hotkeys,
+        skill_manager=manager,
+    )
+
+    assert selection.requested_skill_id == "system_cloud_code_prompt"
+    assert selection.skill_id == "system_cloud_code_prompt"
+    assert selection.source == "app_override"
+    assert selection.auto_selected_skill_id is None

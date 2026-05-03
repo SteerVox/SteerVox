@@ -1,31 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { LOCAL_BACKEND_AUTH_HEADER } from '../../shared/localBackendAuth'
 import { createRuntimeStore } from './runtimeStore'
 
-const { apiGetMock, getBackendRequestContextMock, isApiHttpErrorMock } = vi.hoisted(() => ({
+const { apiGetMock, isApiHttpErrorMock } = vi.hoisted(() => ({
   apiGetMock: vi.fn(),
-  getBackendRequestContextMock: vi.fn(),
   isApiHttpErrorMock: vi.fn().mockReturnValue(false),
 }))
 
 vi.mock('./api', () => ({
   apiGet: apiGetMock,
-  getBackendRequestContext: getBackendRequestContextMock,
   isApiHttpError: isApiHttpErrorMock,
 }))
 
 class MockRuntimeEventStream {
   static instances: MockRuntimeEventStream[] = []
 
-  requestContext: { baseUrl: string; headers: Record<string, string> }
   onopen: ((event: Event) => void) | null = null
   onerror: ((event: Event) => void) | null = null
   close = vi.fn()
   private listeners = new Map<string, Set<(event: MessageEvent<string>) => void>>()
 
-  constructor(requestContext: { baseUrl: string; headers: Record<string, string> }) {
-    this.requestContext = requestContext
+  constructor() {
     MockRuntimeEventStream.instances.push(this)
   }
 
@@ -60,8 +55,8 @@ class MockRuntimeEventStream {
   }
 }
 
-async function createMockRuntimeEventStream(requestContext: { baseUrl: string; headers: Record<string, string> }) {
-  return new MockRuntimeEventStream(requestContext)
+async function createMockRuntimeEventStream() {
+  return new MockRuntimeEventStream()
 }
 
 async function flushMicrotasks() {
@@ -74,13 +69,8 @@ describe('runtime store', () => {
     vi.useFakeTimers()
     MockRuntimeEventStream.instances = []
     apiGetMock.mockReset()
-    getBackendRequestContextMock.mockReset()
     isApiHttpErrorMock.mockReset()
     isApiHttpErrorMock.mockReturnValue(false)
-    getBackendRequestContextMock.mockResolvedValue({
-      baseUrl: 'http://127.0.0.1:8055',
-      headers: { [LOCAL_BACKEND_AUTH_HEADER]: 'test-token' },
-    })
     apiGetMock.mockImplementation((path: string) => {
       if (path === '/providers/models') {
         return Promise.resolve({
@@ -511,6 +501,105 @@ describe('runtime store', () => {
     store.dispose()
   })
 
+  it('applies local task review and progress runtime events without a full status refresh', async () => {
+    const store = createRuntimeStore(createMockRuntimeEventStream)
+    const unsubscribe = store.subscribe(() => undefined)
+
+    await flushMicrotasks()
+
+    const source = MockRuntimeEventStream.instances[0]
+    source.open()
+    source.emit('snapshot', {
+      status: {
+        backend_ready: true,
+        phase: 'ready',
+        phase_label: 'Ready',
+        is_recording: false,
+        is_processing: false,
+        active_mode: null,
+        active_skill: 'system_local_task',
+        audio_amplitude: 0,
+        pending_paste_text: null,
+        pending_paste: null,
+        pending_notification: null,
+        pending_action_review: null,
+        pending_review: null,
+        active_task_run: null,
+        task_result_summary: null,
+        last_error: null,
+        captured_context: null,
+        missing_api_keys: false,
+        context_warning: null,
+        last_smart_run: null,
+        smart_preview: null,
+        recording_cues_enabled: false,
+        restore_clipboard_after_paste: true,
+        pipeline_timings: {
+          record_start: null,
+          stt_done: null,
+          route_done: null,
+          transform_done: null,
+          paste_ack_done: null,
+        },
+      },
+      usage: null,
+      config: null,
+      keys_set: {},
+      revisions: {
+        config: 0,
+        providers: 0,
+        history: 0,
+        tasks: 0,
+        inbox: 0,
+        skills: 0,
+        domains: 0,
+        writing_tools: 0,
+        usage: 0,
+      },
+    }, 1)
+
+    source.emit('pending_review', {
+      id: 'review-1',
+      run_id: 'task-1',
+      scope: 'local_task',
+      kind: 'shell_command',
+      title: 'Review local task',
+      summary: 'Run git status',
+      detail: null,
+      command: 'git status',
+      cwd: '/tmp/workspace',
+      risk_level: 'low',
+      status: 'pending',
+      error: null,
+      language: 'shell',
+      script: 'git status',
+    }, 2)
+    source.emit('active_task_run', {
+      run_id: 'task-1',
+      request_text: 'run git status',
+      title: 'Review local task',
+      status: 'pending_review',
+      command: 'git status',
+      cwd: '/tmp/workspace',
+      created_at: '2026-04-10T00:00:00Z',
+      updated_at: '2026-04-10T00:00:00Z',
+      current_step_id: 'step-1',
+      review_required: true,
+      steps: [],
+      output_blocks: [],
+      result_summary: null,
+      error: null,
+    }, 3)
+
+    await flushMicrotasks()
+
+    expect(store.getSnapshot().snapshot.status?.pending_review?.scope).toBe('local_task')
+    expect(store.getSnapshot().snapshot.status?.active_task_run?.command).toBe('git status')
+
+    unsubscribe()
+    store.dispose()
+  })
+
   it('ignores out-of-order status events', async () => {
     const store = createRuntimeStore(createMockRuntimeEventStream)
     const unsubscribe = store.subscribe(() => undefined)
@@ -639,6 +728,133 @@ describe('runtime store', () => {
 
     expect(apiGetMock).toHaveBeenCalledWith('/status', expect.objectContaining({ timeout: 10000 }))
     expect(store.getSnapshot().snapshot.status?.phase).toBe('ready')
+
+    unsubscribe()
+    store.dispose()
+  })
+
+  it('merges pending paste events so delivery still works if the full status update is missed', async () => {
+    const store = createRuntimeStore(createMockRuntimeEventStream)
+    const unsubscribe = store.subscribe(() => undefined)
+
+    apiGetMock.mockImplementation((path: string) => {
+      if (path === '/providers/models') {
+        return Promise.resolve({
+          data: {
+            llm: { groq: [] },
+            stt: { groq: [] },
+            vision: { lmstudio: [] },
+          },
+        })
+      }
+
+      if (path === '/status') {
+        return Promise.resolve({
+          data: {
+            backend_ready: true,
+            is_recording: false,
+            is_processing: false,
+            active_mode: null,
+            active_skill: 'system_dictation',
+            audio_amplitude: 0,
+            last_error: null,
+            pending_paste_text: 'dictated text',
+            pending_paste: {
+              id: 'paste-1',
+              text: 'dictated text',
+              restore_clipboard_after_paste: true,
+            },
+            pending_notification: null,
+            pending_action_review: null,
+            missing_api_keys: false,
+            recording_cues_enabled: false,
+            restore_clipboard_after_paste: true,
+            phase: 'preparing_paste',
+            phase_label: 'Preparing paste',
+            captured_context: null,
+            context_warning: null,
+            last_smart_run: null,
+            pipeline_timings: {
+              record_start: null,
+              stt_done: null,
+              route_done: null,
+              transform_done: null,
+              paste_ack_done: null,
+            },
+          },
+        })
+      }
+
+      throw new Error(`Unexpected apiGet path: ${path}`)
+    })
+
+    await flushMicrotasks()
+
+    const source = MockRuntimeEventStream.instances[0]
+    source.open()
+    source.emit('snapshot', {
+      status: {
+        backend_ready: true,
+        is_recording: false,
+        is_processing: false,
+        active_mode: null,
+        active_skill: 'system_dictation',
+        audio_amplitude: 0,
+        last_error: null,
+        pending_paste_text: null,
+        pending_paste: null,
+        pending_notification: null,
+        pending_action_review: null,
+        missing_api_keys: false,
+        recording_cues_enabled: false,
+        restore_clipboard_after_paste: true,
+        phase: 'ready',
+        phase_label: 'Ready',
+        captured_context: null,
+        context_warning: null,
+        last_smart_run: null,
+        pipeline_timings: {
+          record_start: null,
+          stt_done: null,
+          route_done: null,
+          transform_done: null,
+          paste_ack_done: null,
+        },
+      },
+      usage: null,
+      config: null,
+      keys_set: {},
+      revisions: {
+        config: 0,
+        providers: 0,
+        history: 0,
+        inbox: 0,
+        skills: 0,
+        domains: 0,
+        writing_tools: 0,
+        usage: 0,
+      },
+    }, 1)
+
+    source.emit('pending_paste', {
+      pending_paste: {
+        id: 'paste-1',
+        text: 'dictated text',
+        restore_clipboard_after_paste: true,
+      },
+      pending_paste_text: 'dictated text',
+    }, 2)
+
+    await flushMicrotasks()
+
+    expect(store.getSnapshot().snapshot.status?.pending_paste).toEqual({
+      id: 'paste-1',
+      text: 'dictated text',
+      restore_clipboard_after_paste: true,
+    })
+    expect(store.getSnapshot().snapshot.status?.pending_paste_text).toBe('dictated text')
+    expect(store.getSnapshot().snapshot.status?.phase).toBe('preparing_paste')
+    expect(apiGetMock).toHaveBeenCalledWith('/status', expect.objectContaining({ timeout: 10000 }))
 
     unsubscribe()
     store.dispose()

@@ -4,6 +4,7 @@
   "version": "1.0.1",
   "description": "SteerVox desktop voice control application",
   "author": "SteerVox",
+  "license": "SEE LICENSE IN ../LICENSE.md",
   "type": "module",
   "main": "dist-electron/main.js",
   "scripts": {
@@ -16,14 +17,19 @@
     "build:local-speech-helper": "node scripts/build-local-speech-helper.mjs",
     "build:system-control-helper": "node scripts/build-system-control-helper.mjs",
     "build": "npm run branding:validate && npm run validate:mac-assets && npm run build:local-speech-helper && npm run build:system-control-helper && npm run package:desktop",
-    "build:mac": "bash ../scripts/build-mac.sh",
+    "build:mac": "bash ../scripts/build-mac.sh public-beta",
+    "build:mac:public-beta": "bash ../scripts/build-mac.sh public-beta",
+    "build:mac:signed": "bash ../scripts/build-mac.sh signed",
     "lint": "eslint .",
     "test": "vitest run",
     "preview": "vite preview",
+    "verify:release": "bash ../scripts/verify-release.sh public-beta",
     "branding:sync": "node ../scripts/sync-branding.mjs",
     "branding:validate": "node ../scripts/validate-branding.mjs",
     "package:desktop": "npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder",
-    "package:desktop:mac": "npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder --mac dmg --arm64"
+    "package:desktop:mac": "npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder --mac dmg --arm64",
+    "package:desktop:mac:public-beta": "npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder --mac dmg --arm64",
+    "package:desktop:mac:signed": "npm run prepare:ffmpeg-runtime && tsc -b && vite build && electron-builder --mac dmg --arm64"
   },
   "build": {
     "appId": "com.steervox.app",

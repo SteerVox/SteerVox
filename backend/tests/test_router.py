@@ -218,7 +218,7 @@ def test_router_detects_explicit_desktop_action_requests():
         effective_skill=DefaultSkills.DICTATION,
     )
 
-    assert decision.intent == SmartIntent.ACTION_EXECUTION
+    assert decision.intent == SmartIntent.COMPUTER_USE
     assert decision.lane == SmartLane.DETERMINISTIC
 
 
@@ -236,7 +236,43 @@ def test_router_detects_spoken_dot_url_requests_as_deterministic_actions():
         effective_skill=DefaultSkills.DICTATION,
     )
 
-    assert decision.intent == SmartIntent.ACTION_EXECUTION
+    assert decision.intent == SmartIntent.COMPUTER_USE
+    assert decision.lane == SmartLane.DETERMINISTIC
+
+
+def test_router_routes_explicit_local_task_skill_into_local_task_intent():
+    router = LocalIntentRouter()
+    decision = router.plan(
+        "run git status",
+        {
+            "app_name": "Cursor",
+            "window_title": "repo",
+            "context_quality": "full",
+            "target_type": "ide",
+        },
+        requested_skill=DefaultSkills.LOCAL_TASK,
+        effective_skill=DefaultSkills.LOCAL_TASK,
+    )
+
+    assert decision.intent == SmartIntent.LOCAL_TASK
+    assert decision.lane == SmartLane.DETERMINISTIC
+
+
+def test_router_routes_explicit_computer_use_skill_into_computer_use_intent():
+    router = LocalIntentRouter()
+    decision = router.plan(
+        "open Finder",
+        {
+            "app_name": "Notes",
+            "window_title": "Draft",
+            "context_quality": "app_only",
+            "target_type": "generic",
+        },
+        requested_skill=DefaultSkills.COMPUTER_USE,
+        effective_skill=DefaultSkills.COMPUTER_USE,
+    )
+
+    assert decision.intent == SmartIntent.COMPUTER_USE
     assert decision.lane == SmartLane.DETERMINISTIC
 
 
@@ -254,8 +290,8 @@ def test_router_detects_named_field_focus_requests_as_actions():
         effective_skill=DefaultSkills.DICTATION,
     )
 
-    assert decision.intent == SmartIntent.ACTION_EXECUTION
-    assert decision.lane == SmartLane.LLM
+    assert decision.intent == SmartIntent.COMPUTER_USE
+    assert decision.lane == SmartLane.DETERMINISTIC
 
 
 def test_router_detects_named_button_press_requests_as_actions():
@@ -272,8 +308,8 @@ def test_router_detects_named_button_press_requests_as_actions():
         effective_skill=DefaultSkills.DICTATION,
     )
 
-    assert decision.intent == SmartIntent.ACTION_EXECUTION
-    assert decision.lane == SmartLane.LLM
+    assert decision.intent == SmartIntent.COMPUTER_USE
+    assert decision.lane == SmartLane.DETERMINISTIC
 
 
 def test_router_does_not_treat_long_freeform_speech_with_action_words_as_action_execution():
@@ -290,7 +326,42 @@ def test_router_does_not_treat_long_freeform_speech_with_action_words_as_action_
         effective_skill=DefaultSkills.DICTATION,
     )
 
-    assert decision.intent != SmartIntent.ACTION_EXECUTION
+    assert decision.intent not in {SmartIntent.ACTION_EXECUTION, SmartIntent.COMPUTER_USE}
+
+
+def test_router_detects_repo_search_requests_as_computer_use():
+    router = LocalIntentRouter()
+    decision = router.plan(
+        "search the repo for LocalTaskShellService",
+        {
+            "app_name": "Notes",
+            "window_title": "Scratchpad",
+            "context_quality": "app_only",
+            "target_type": "generic",
+        },
+        requested_skill=DefaultSkills.DICTATION,
+        effective_skill=DefaultSkills.DICTATION,
+    )
+
+    assert decision.intent == SmartIntent.COMPUTER_USE
+    assert decision.lane == SmartLane.DETERMINISTIC
+
+
+def test_router_does_not_trigger_computer_use_just_because_an_agent_editor_is_frontmost():
+    router = LocalIntentRouter()
+    decision = router.plan(
+        "refactor this auth migration prompt and include verification steps",
+        {
+            "app_name": "Cloud Code",
+            "window_title": "repo",
+            "context_quality": "full",
+            "target_type": "ide",
+        },
+        requested_skill=DefaultSkills.CLOUD_CODE_PROMPT,
+        effective_skill=DefaultSkills.CLOUD_CODE_PROMPT,
+    )
+
+    assert decision.intent != SmartIntent.COMPUTER_USE
 
 
 def test_router_treats_split_grammar_skills_as_cleanup_routes():
@@ -425,8 +496,8 @@ def test_router_prioritizes_explicit_action_requests_over_prompt_site_skill(host
         effective_skill=DefaultSkills.PROMPT_ARCHITECT,
     )
 
-    assert decision.intent == SmartIntent.ACTION_EXECUTION
-    assert decision.lane == SmartLane.LLM
+    assert decision.intent == SmartIntent.COMPUTER_USE
+    assert decision.lane == SmartLane.DETERMINISTIC
 
 
 @pytest.mark.parametrize("host", ["chatgpt.com", "claude.ai", "gemini.google.com"])
@@ -445,8 +516,8 @@ def test_router_prioritizes_explicit_button_actions_over_prompt_site_skill(host)
         effective_skill=DefaultSkills.PROMPT_ARCHITECT,
     )
 
-    assert decision.intent == SmartIntent.ACTION_EXECUTION
-    assert decision.lane == SmartLane.LLM
+    assert decision.intent == SmartIntent.COMPUTER_USE
+    assert decision.lane == SmartLane.DETERMINISTIC
 
 
 @pytest.mark.parametrize("host", ["chatgpt.com", "claude.ai", "gemini.google.com"])
@@ -465,8 +536,8 @@ def test_router_prioritizes_browser_focus_actions_over_prompt_site_skill(host):
         effective_skill=DefaultSkills.PROMPT_ARCHITECT,
     )
 
-    assert decision.intent == SmartIntent.ACTION_EXECUTION
-    assert decision.lane in {SmartLane.LLM, SmartLane.DETERMINISTIC}
+    assert decision.intent == SmartIntent.COMPUTER_USE
+    assert decision.lane == SmartLane.DETERMINISTIC
 
 
 def test_router_detects_workflow_design_for_agent_builder_skill():

@@ -6,8 +6,8 @@ import { BrandedProgressLoader } from './components/BrandedProgressLoader'
 import { ArrowRightIcon, CheckIcon, InboxIcon, MicIcon, SparkIcon, WarningIcon } from './components/BrandIcons'
 import { apiGet } from './lib/api'
 import { getErrorMessage, isAbortError } from './lib/errors'
-import { createLibraryItems, formatLibraryItemLabel, formatLibraryTimestamp } from './lib/library'
-import { providerRequiresKey } from './lib/onboarding'
+import { formatLibraryItemLabel, formatLibraryTimestamp } from './lib/library'
+import { formatProviderDisplayName } from './lib/providerLabels'
 import { buildLibraryRoute, buildSettingsRoute } from './lib/routes'
 import { selectOnboardingState, selectPrimaryAttentionIssue, selectReadinessState } from './lib/runtimeSelectors'
 import { createLatestRequestController, responseData, retryRead, settleRecord, withSignal } from './lib/runtime'
@@ -15,13 +15,11 @@ import { refreshRuntimeLocalEnvironment, useRuntimeStore } from './lib/runtimeSt
 import { useCaptureStateSubscription, useLaunchContextState } from './hooks/useDesktopBridgeState'
 import type {
   CaptureState,
-  HistoryItem,
-  InboxNote,
+  LibraryItem,
   SectionLoadState,
   RecordingMode,
 } from './types'
 
-type InboxResponse = { notes: InboxNote[] }
 const EMPTY_CAPTURE_STATE: CaptureState = {
   is_recording: false,
   is_testing: false,
@@ -71,15 +69,15 @@ function ActionButton({
     <button
       type="button"
       onClick={onClick}
-      className="glass-card group rounded-[28px] p-5 text-left transition-transform hover:-translate-y-0.5"
+      className="glass-card group min-h-[148px] p-5 text-left transition-colors hover:border-white/14 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-focus/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#161920]"
     >
       <div className="flex items-start justify-between gap-4">
-        <div className="widget-control flex h-11 w-11 items-center justify-center rounded-2xl text-text-primary">
+        <div className="widget-control flex h-10 w-10 items-center justify-center rounded-lg text-text-primary">
           {icon}
         </div>
-        <ArrowRightIcon size={16} className="text-text-muted transition-transform group-hover:translate-x-0.5 group-hover:text-text-primary" />
+        <ArrowRightIcon size={16} className="text-text-muted transition-colors group-hover:text-text-primary" />
       </div>
-      <div className="mt-5 text-lg font-semibold tracking-[-0.02em] text-text-primary">{title}</div>
+      <div className="mt-5 text-lg font-semibold text-text-primary">{title}</div>
       <p className="mt-2 text-sm leading-6 text-text-secondary">{detail}</p>
     </button>
   )
@@ -95,7 +93,7 @@ function QuickStatusCard({
   tone: 'good' | 'warn' | 'danger' | 'neutral'
 }) {
   return (
-    <div className="section-intro-panel rounded-[22px] border border-white/6 p-4">
+    <div className="section-intro-panel rounded-xl border border-white/6 p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="text-sm font-medium text-text-primary">{label}</div>
         <StatusPill label={tone === 'good' ? 'Ready' : tone === 'warn' ? 'Attention' : tone === 'danger' ? 'Blocked' : 'Idle'} tone={tone} />
@@ -113,7 +111,7 @@ function ExampleCard({
   example: string
 }) {
   return (
-    <div className="rounded-2xl border border-white/6 bg-black/22 p-4">
+    <div className="rounded-xl border border-white/6 bg-black/22 p-4">
       <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">{title}</div>
       <div className="mt-3 font-mono text-sm leading-7 text-text-primary">{example}</div>
     </div>
@@ -132,7 +130,7 @@ function ChecklistRow({
   action?: ReactNode
 }) {
   return (
-    <div className={`rounded-2xl border p-4 ${completed ? 'border-semantic-success/20 bg-semantic-success/8' : 'border-white/6 bg-white/[0.02]'}`}>
+    <div className={`rounded-xl border p-4 ${completed ? 'border-semantic-success/20 bg-semantic-success/8' : 'border-white/6 bg-white/[0.02]'}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -164,22 +162,16 @@ export function HomeView() {
 
   const [recentState, setRecentState] = useState<SectionLoadState>(INITIAL_SECTION_STATE)
   const [actionError, setActionError] = useState<string | null>(null)
-  const [historyItems, setHistoryItems] = useState<HistoryItem[]>([])
-  const [notes, setNotes] = useState<InboxNote[]>([])
+  const [recentItems, setRecentItems] = useState<LibraryItem[]>([])
   const [launchContext, setLaunchContext] = useLaunchContextState()
   const [captureState] = useCaptureStateSubscription(EMPTY_CAPTURE_STATE)
   const recentRequestsRef = useRef(createLatestRequestController())
-  const notesRef = useRef<InboxNote[]>([])
-  const historyRef = useRef<HistoryItem[]>([])
+  const recentItemsRef = useRef<LibraryItem[]>([])
   const recentStateRef = useRef<SectionLoadState>(INITIAL_SECTION_STATE)
 
   useEffect(() => {
-    notesRef.current = notes
-  }, [notes])
-
-  useEffect(() => {
-    historyRef.current = historyItems
-  }, [historyItems])
+    recentItemsRef.current = recentItems
+  }, [recentItems])
 
   useEffect(() => {
     recentStateRef.current = recentState
@@ -187,7 +179,7 @@ export function HomeView() {
 
   const loadRecentActivity = useCallback(async (quiet = false) => {
     const request = recentRequestsRef.current.begin()
-    if (!quiet || (!historyRef.current.length && !notesRef.current.length)) {
+    if (!quiet || !recentItemsRef.current.length) {
       setRecentState((current) => ({
         ...current,
         status: 'loading',
@@ -198,37 +190,27 @@ export function HomeView() {
     try {
       const settled = await retryRead(async (signal) => (
         settleRecord<{
-          history: Promise<{ items: HistoryItem[] }>
-          notes: Promise<InboxResponse>
+          library: Promise<{ items: LibraryItem[] }>
         }>({
-          history: apiGet<{ items: HistoryItem[] }>('/history', withSignal({ timeout: 10000 }, signal)).then(responseData),
-          notes: apiGet<InboxResponse>('/inbox', withSignal({ timeout: 10000 }, signal)).then(responseData),
+          library: apiGet<{ items: LibraryItem[] }>('/library?limit=3', withSignal({ timeout: 10000 }, signal)).then(responseData),
         })
       ), { signal: request.signal })
 
       if (!recentRequestsRef.current.isLatest(request.token)) return
 
-      if (settled.history.status === 'fulfilled') {
-        setHistoryItems(settled.history.value.items || [])
+      if (settled.library.status === 'fulfilled') {
+        setRecentItems(settled.library.value.items || [])
       }
-      if (settled.notes.status === 'fulfilled') {
-        setNotes(settled.notes.value.notes || [])
-      }
-
-      const errors = [
-        settled.history.status === 'rejected' ? 'Recent runs' : null,
-        settled.notes.status === 'rejected' ? 'Notes' : null,
-      ].filter(Boolean)
 
       setRecentState({
-        status: errors.length ? 'stale' : 'ready',
-        error: errors.length ? `${errors.join(' and ')} could not refresh. Showing the last successful load.` : null,
-        stale: Boolean(errors.length),
+        status: settled.library.status === 'fulfilled' ? 'ready' : 'stale',
+        error: settled.library.status === 'rejected' ? 'Library could not refresh. Showing the last successful load.' : null,
+        stale: settled.library.status === 'rejected',
         updatedAt: Date.now(),
       })
     } catch (nextError: unknown) {
       if (isAbortError(nextError) || !recentRequestsRef.current.isLatest(request.token)) return
-      const hasLastGoodData = historyRef.current.length > 0 || notesRef.current.length > 0
+      const hasLastGoodData = recentItemsRef.current.length > 0
       setRecentState({
         status: hasLastGoodData ? 'stale' : 'error',
         error: getErrorMessage(nextError, 'Unable to load recent activity right now.'),
@@ -313,25 +295,27 @@ export function HomeView() {
 
   const completePackagedOnboarding = async () => {
     const nextContext = await window.windowControls?.completePackagedOnboarding?.()
-    if (nextContext) setLaunchContext(nextContext)
+    if (nextContext) {
+      setLaunchContext(nextContext)
+      setActionError(nextContext.onboarding_blocker)
+    }
   }
 
   const dismissPackagedOnboarding = async () => {
     const nextContext = await window.windowControls?.dismissPackagedOnboarding?.()
-    if (nextContext) setLaunchContext(nextContext)
+    if (nextContext) {
+      setLaunchContext(nextContext)
+      setActionError(null)
+    }
   }
 
   const readinessState = useMemo(() => selectReadinessState(runtime), [runtime])
   const onboardingState = useMemo(() => selectOnboardingState(runtime), [runtime])
   const primaryAttentionIssue = useMemo(() => selectPrimaryAttentionIssue(runtime), [runtime])
 
-  const recentItems = useMemo(
-    () => createLibraryItems(notes, historyItems).slice(0, 3),
-    [historyItems, notes],
-  )
-
-  const showChecklist = Boolean(onboardingState && !onboardingState.completed)
-  const showRewriteFollowUp = Boolean(onboardingState?.completed && !onboardingState.rewriteProviderReady)
+  const packagedInstallReady = !launchContext?.is_packaged || launchContext.install_location === 'applications'
+  const packagedOnboardingReady = Boolean(onboardingState?.completed && packagedInstallReady)
+  const showChecklist = Boolean(onboardingState && (!onboardingState.completed || !packagedInstallReady))
   const isDictationRecording = captureState.is_recording && captureState.mode === 'dictation'
   const isRewriteRecording = captureState.is_recording && captureState.mode === 'smart_transform'
   const environmentPending = localEnvironment.status === 'checking' || localEnvironment.status === 'verifying'
@@ -363,14 +347,14 @@ export function HomeView() {
   if (connectionState === 'error' && !config) {
     return (
       <div className="flex h-full items-center justify-center px-8">
-        <div className="w-full max-w-xl rounded-[28px] border border-semantic-error/20 bg-[linear-gradient(180deg,rgba(42,11,18,0.75),rgba(11,8,12,0.9))] p-8">
+        <div className="w-full max-w-xl rounded-xl border border-semantic-error/20 bg-[linear-gradient(180deg,rgba(42,11,18,0.75),rgba(11,8,12,0.9))] p-8">
           <div className="text-lg font-semibold text-text-primary">{`${DISPLAY_NAME} is not ready`}</div>
           <p className="mt-3 text-sm leading-7 text-text-secondary">{connectionError || 'Unable to load the current workspace.'}</p>
           <div className="mt-6">
             <button
               type="button"
               onClick={() => void refreshRuntimeLocalEnvironment()}
-              className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+              className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
             >
               Try again
             </button>
@@ -381,12 +365,12 @@ export function HomeView() {
   }
 
   return (
-    <div className="h-full overflow-y-auto px-8 py-6">
+    <div className="h-full overflow-y-auto px-6 py-5 lg:px-8">
       <div className="mx-auto max-w-6xl pb-10">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="text-[11px] uppercase tracking-[0.3em] text-text-muted">Home</div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-text-primary">Talk, polish, and keep moving.</h1>
+            <h1 className="mt-2 text-[28px] font-semibold text-text-primary">Talk, polish, and keep moving.</h1>
             <p className="mt-3 max-w-3xl text-sm leading-7 text-text-secondary">
               {`${DISPLAY_NAME} is ready when voice capture, paste, and your provider choices are aligned. Use this screen for the daily path and keep the heavier controls in Settings.`}
             </p>
@@ -394,18 +378,32 @@ export function HomeView() {
           {readinessState ? (
             <div className="flex flex-wrap items-center gap-2">
               <StatusPill label={environmentPending ? 'Checking access' : readinessState.dictationReady ? 'Dictation ready' : 'Dictation needs setup'} tone={environmentPending ? 'neutral' : readinessState.dictationReady ? 'good' : 'warn'} />
-              <StatusPill label={environmentPending ? 'Verifying readiness' : readinessState.rewriteReady ? 'Smart ready' : 'Smart optional'} tone={environmentPending ? 'neutral' : readinessState.rewriteReady ? 'good' : 'neutral'} />
+              <StatusPill label={environmentPending ? 'Verifying readiness' : readinessState.rewriteReady ? 'Smart ready' : 'Smart needs setup'} tone={environmentPending ? 'neutral' : readinessState.rewriteReady ? 'good' : 'warn'} />
             </div>
           ) : null}
         </div>
 
         {actionError || connectionError || environmentMessage ? (
-          <div className="mt-6 rounded-2xl border border-semantic-warning/20 bg-semantic-warning/8 px-4 py-3 text-sm leading-6 text-text-secondary">
+          <div className="mt-5 rounded-xl border border-semantic-warning/20 bg-semantic-warning/8 px-4 py-3 text-sm leading-6 text-text-secondary">
             {actionError || connectionError || environmentMessage}
           </div>
         ) : null}
 
-        <section className="mt-6 grid gap-5 lg:grid-cols-3">
+        {launchContext?.is_packaged ? (
+          <div className="mt-5 rounded-xl border border-white/8 bg-white/[0.03] px-4 py-3">
+            <div className="flex flex-wrap items-start justify-between gap-3">
+              <div>
+                <div className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Public beta</div>
+                <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">
+                  This Apple Silicon beta is distributed from the website as an unsigned build. Open it with the macOS beta workaround, move it into Applications, and reinstall manually when a new beta is published.
+                </p>
+              </div>
+              <StatusPill label={launchContext.install_location === 'applications' ? 'Applications' : 'Move app first'} tone={launchContext.install_location === 'applications' ? 'good' : 'warn'} />
+            </div>
+          </div>
+        ) : null}
+
+        <section className="mt-5 grid gap-4 lg:grid-cols-3">
           <ActionButton
             title={isDictationRecording ? 'Stop dictation' : 'Dictate'}
             detail={isDictationRecording ? 'Recording right now. Stop when you are ready to paste.' : 'Capture speech and paste it back into the app you were using.'}
@@ -427,7 +425,7 @@ export function HomeView() {
         </section>
 
         {readinessState ? (
-          <section className="mt-8">
+          <section className="mt-7">
             <div className="mb-4 flex items-center justify-between gap-4">
               <div>
                 <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">Readiness</div>
@@ -447,36 +445,48 @@ export function HomeView() {
               />
               <QuickStatusCard
                 label="Dictation provider"
-                detail={readinessState.dictationProviderReady
-                  ? providerRequiresKey(config?.stt.provider || '') ? `${config?.stt.provider || 'Provider'} is configured.` : `${config?.stt.provider || 'Provider'} is selected locally.`
-                  : providerRequiresKey(config?.stt.provider || '') ? `${config?.stt.provider || 'Provider'} needs an API key.` : `${config?.stt.provider || 'Provider'} still needs local setup.`}
+                detail={readinessState.dictationProviderDetail}
                 tone={readinessState.dictationProviderReady ? 'good' : 'warn'}
               />
               <QuickStatusCard
                 label="Smart provider"
-                detail={readinessState.rewriteProviderReady
-                  ? providerRequiresKey(config?.llm.provider || '') ? `${config?.llm.provider || 'Provider'} is configured.` : `${config?.llm.provider || 'Provider'} is selected. Add cloud keys only if you want hosted providers.`
-                  : providerRequiresKey(config?.llm.provider || '') ? `${config?.llm.provider || 'Provider'} is optional until you want a hosted Smart provider.` : `${config?.llm.provider || 'Provider'} still needs local setup.`}
-                tone={readinessState.rewriteProviderReady ? 'good' : 'neutral'}
+                detail={readinessState.rewriteProviderDetail}
+                tone={readinessState.rewriteProviderReady ? 'good' : 'warn'}
               />
             </div>
           </section>
         ) : null}
 
         {showChecklist && onboardingState ? (
-          <section className="mt-8 glass-card p-6">
+          <section className="mt-7 glass-card p-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">First success</div>
-                <h2 className="mt-2 text-xl font-semibold text-text-primary">Finish the voice checklist</h2>
+                <h2 className="mt-2 text-xl font-semibold text-text-primary">Finish the setup checklist</h2>
                 <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">
-                  This sequence is intentionally short: get dictation working first, then unlock Smart when you want it.
+                  This sequence is intentionally short: install correctly, get Dictation working, then confirm the Smart path on the same Mac.
                 </p>
               </div>
               <StatusPill label={onboardingState.completed ? 'Ready to finish' : 'In progress'} tone={onboardingState.completed ? 'good' : 'warn'} />
             </div>
 
             <div className="mt-5 grid gap-4">
+              {launchContext?.is_packaged ? (
+                <ChecklistRow
+                  title="Move the app to Applications"
+                  description="Website betas should be reopened from /Applications before you finish setup or trust the permissions state."
+                  completed={packagedInstallReady}
+                  action={!packagedInstallReady ? (
+                    <button
+                      type="button"
+                      onClick={() => navigate(buildSettingsRoute('voice'))}
+                      className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                    >
+                      Open install steps
+                    </button>
+                  ) : undefined}
+                />
+              ) : null}
               <ChecklistRow
                 title="Enable microphone"
                 description={`Grant microphone access so ${DISPLAY_NAME} can listen for speech.`}
@@ -485,7 +495,7 @@ export function HomeView() {
                   <button
                     type="button"
                     onClick={() => void requestMicrophone()}
-                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                    className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                   >
                     Enable microphone
                   </button>
@@ -499,7 +509,7 @@ export function HomeView() {
                   <button
                     type="button"
                     onClick={() => void requestAccessibility()}
-                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                    className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                   >
                     Enable Accessibility
                   </button>
@@ -507,13 +517,13 @@ export function HomeView() {
               />
               <ChecklistRow
                 title="Configure dictation"
-                description="Use one provider path for speech recognition first. Groq is the fastest one-key option."
+                description={`Choose the active Dictation path first. ${formatProviderDisplayName(config?.stt.provider || '')} is currently selected.`}
                 completed={onboardingState.dictationProviderReady}
                 action={!onboardingState.dictationProviderReady ? (
                   <button
                     type="button"
                     onClick={() => navigate(buildSettingsRoute('voice'))}
-                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                    className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                   >
                     Open voice settings
                   </button>
@@ -527,9 +537,37 @@ export function HomeView() {
                   <button
                     type="button"
                     onClick={() => void toggleRecording('dictation')}
-                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                    className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                   >
                     {isDictationRecording ? 'Stop dictation' : 'Start dictation'}
+                  </button>
+                ) : undefined}
+              />
+              <ChecklistRow
+                title="Configure Smart"
+                description={`Choose the active Smart path. ${formatProviderDisplayName(config?.llm.provider || '')} is currently selected.`}
+                completed={onboardingState.rewriteProviderReady}
+                action={!onboardingState.rewriteProviderReady ? (
+                  <button
+                    type="button"
+                    onClick={() => navigate(buildSettingsRoute('rewrite'))}
+                    className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                  >
+                    Open Smart settings
+                  </button>
+                ) : undefined}
+              />
+              <ChecklistRow
+                title="Use Smart once"
+                description="Run one real Smart pass so you know the selected model and template route works end to end."
+                completed={onboardingState.smartTested}
+                action={!onboardingState.smartTested ? (
+                  <button
+                    type="button"
+                    onClick={() => void toggleRecording('smart_transform')}
+                    className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                  >
+                    {isRewriteRecording ? 'Stop Smart' : 'Start Smart'}
                   </button>
                 ) : undefined}
               />
@@ -540,40 +578,20 @@ export function HomeView() {
                 <button
                   type="button"
                   onClick={() => void dismissPackagedOnboarding()}
-                  className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.06]"
+                  className="rounded-lg border border-white/8 bg-white/[0.03] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.06]"
                 >
                   Continue later
                 </button>
                 <button
                   type="button"
                   onClick={() => void completePackagedOnboarding()}
-                  disabled={!onboardingState.completed}
-                  className="rounded-2xl border border-accent-primary/20 bg-accent-primary px-4 py-2.5 text-sm font-medium text-[#021318] transition-colors hover:bg-[#46f0f4] disabled:cursor-not-allowed disabled:opacity-45"
+                  disabled={!packagedOnboardingReady}
+                  className="rounded-lg border border-accent-primary/20 bg-accent-primary px-4 py-2.5 text-sm font-medium text-[#021318] transition-colors hover:bg-[#46f0f4] disabled:cursor-not-allowed disabled:opacity-45"
                 >
-                  {onboardingState.completed ? 'Finish setup' : 'Finish after dictation works'}
+                  {packagedOnboardingReady ? 'Finish setup' : 'Finish after install, Dictation, and Smart'}
                 </button>
               </div>
             ) : null}
-          </section>
-        ) : null}
-
-        {showRewriteFollowUp ? (
-          <section className="mt-6 rounded-[24px] border border-white/6 bg-white/[0.02] p-5">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <div className="text-sm font-medium text-text-primary">Smart is optional until you need it</div>
-                <p className="mt-2 max-w-3xl text-sm leading-6 text-text-secondary">
-                  Dictation is working. When you want the polished Smart path, add an LLM provider in Settings. Groq remains the simplest one-key option for both speech and Smart.
-                </p>
-              </div>
-              <button
-                type="button"
-                onClick={() => navigate(buildSettingsRoute('rewrite'))}
-                className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
-              >
-                Open Smart settings
-              </button>
-            </div>
           </section>
         ) : null}
 
@@ -607,14 +625,14 @@ export function HomeView() {
                 <button
                   type="button"
                   onClick={() => void loadRecentActivity()}
-                  className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-2 text-xs font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                  className="rounded-lg border border-white/8 bg-white/[0.04] px-3 py-2 text-xs font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                 >
                   Refresh
                 </button>
                 <button
                   type="button"
                   onClick={() => navigate(buildLibraryRoute())}
-                  className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-2 text-xs font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                  className="rounded-lg border border-white/8 bg-white/[0.04] px-3 py-2 text-xs font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                 >
                   Open Library
                 </button>
@@ -622,7 +640,7 @@ export function HomeView() {
             </div>
 
             {recentState.error ? (
-              <div className="mt-4 rounded-2xl border border-semantic-warning/20 bg-semantic-warning/8 px-4 py-3 text-sm leading-6 text-text-secondary">
+              <div className="mt-4 rounded-lg border border-semantic-warning/20 bg-semantic-warning/8 px-4 py-3 text-sm leading-6 text-text-secondary">
                 {recentState.error}
               </div>
             ) : null}
@@ -630,20 +648,20 @@ export function HomeView() {
             <div className="mt-5 space-y-3">
               {recentItems.length ? recentItems.map((item) => (
                 <button
-                  key={`${item.kind}:${item.id}`}
+                  key={item.id}
                   type="button"
-                  onClick={() => navigate(buildLibraryRoute(item.kind === 'note' ? 'notes' : 'recent_runs'))}
-                  className="w-full rounded-2xl border border-white/6 bg-black/20 px-4 py-3 text-left transition-colors hover:bg-black/26"
+                  onClick={() => navigate(buildLibraryRoute(item.source_type === 'note' ? 'notes' : 'runs'))}
+                  className="w-full rounded-lg border border-white/6 bg-black/20 px-4 py-3 text-left transition-colors hover:bg-black/26"
                 >
                   <div className="flex items-center justify-between gap-3">
-                    <div className="truncate text-[11px] uppercase tracking-[0.18em] text-text-muted">{item.app_name}</div>
+                    <div className="truncate text-[11px] uppercase tracking-[0.18em] text-text-muted">{item.metadata.app_name}</div>
                     <div className="shrink-0 text-[11px] uppercase tracking-[0.18em] text-text-muted">{formatLibraryTimestamp(item.created_at)}</div>
                   </div>
                   <div className="mt-2 text-sm leading-6 text-text-primary">{item.preview}</div>
                   <div className="mt-2 text-[11px] uppercase tracking-[0.18em] text-text-secondary">{formatLibraryItemLabel(item)}</div>
                 </button>
               )) : (
-                <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-5 text-sm leading-6 text-text-secondary">
+                <div className="rounded-lg border border-dashed border-white/10 bg-black/20 px-4 py-5 text-sm leading-6 text-text-secondary">
                   Your saved notes and recent runs will show up here after the first dictation or rewrite.
                 </div>
               )}

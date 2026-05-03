@@ -1,13 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
 
-import type { CaptureBridge, WindowControls } from '../src/ipc/contracts'
-import type { PrivacyPane, RecordingMode, WidgetPresentationSource } from '../src/types'
+import type { BackendProxyMethod, BackendProxyRequest, CaptureBridge, WindowControls } from '../src/ipc/contracts'
+import type { DesktopLogKind, PrivacyPane, RecordingMode, WidgetPresentationSource } from '../src/types'
 
 type IpcListener<T> = (_event: unknown, payload: T) => void
 
 const PRIVACY_PANES: ReadonlySet<PrivacyPane> = new Set(['microphone', 'accessibility', 'automation'] as const)
 const RECORDING_MODES: ReadonlySet<RecordingMode> = new Set(['dictation', 'smart_transform'] as const)
 const WIDGET_SOURCES: ReadonlySet<WidgetPresentationSource> = new Set(['tray', 'hotkey', 'idle'] as const)
+const DESKTOP_LOG_KINDS: ReadonlySet<DesktopLogKind> = new Set(['backend', 'electron'] as const)
+const BACKEND_PROXY_METHODS: ReadonlySet<BackendProxyMethod> = new Set(['GET', 'POST', 'PUT', 'DELETE'] as const)
 
 function assertBoolean(name: string, value: unknown): asserts value is boolean {
   if (typeof value !== 'boolean') {
@@ -33,6 +35,13 @@ function assertFunction(name: string, value: unknown): asserts value is (...args
   }
 }
 
+function assertDesktopLogKind(value: unknown): asserts value is DesktopLogKind {
+  assertString('kind', value)
+  if (!DESKTOP_LOG_KINDS.has(value as DesktopLogKind)) {
+    throw new TypeError(`Unsupported log kind: ${value}.`)
+  }
+}
+
 function assertPrivacyPane(value: unknown): asserts value is PrivacyPane {
   assertString('pane', value)
   if (!PRIVACY_PANES.has(value as PrivacyPane)) {
@@ -51,6 +60,33 @@ function assertWidgetSource(value: unknown): asserts value is WidgetPresentation
   assertString('source', value)
   if (!WIDGET_SOURCES.has(value as WidgetPresentationSource)) {
     throw new TypeError(`Unsupported widget source: ${value}.`)
+  }
+}
+
+function assertBackendProxyRequest(value: unknown): asserts value is BackendProxyRequest {
+  if (typeof value !== 'object' || value === null) {
+    throw new TypeError('backendRequest payload must be an object.')
+  }
+
+  const request = value as Partial<BackendProxyRequest>
+  assertString('payload.method', request.method)
+  if (!BACKEND_PROXY_METHODS.has(request.method as BackendProxyMethod)) {
+    throw new TypeError(`Unsupported backend request method: ${request.method}.`)
+  }
+  assertString('payload.path', request.path)
+  if (!request.path.startsWith('/') || request.path.startsWith('//')) {
+    throw new TypeError('backendRequest path must be a local absolute path.')
+  }
+  if (request.headers !== undefined && (typeof request.headers !== 'object' || request.headers === null || Array.isArray(request.headers))) {
+    throw new TypeError('backendRequest headers must be an object when provided.')
+  }
+  if (request.headers) {
+    Object.entries(request.headers).forEach(([name, value]) => {
+      assertString(`payload.headers.${name}`, value)
+    })
+  }
+  if (request.timeout !== undefined && typeof request.timeout !== 'number') {
+    throw new TypeError('backendRequest timeout must be a number when provided.')
   }
 }
 
@@ -122,6 +158,10 @@ function buildWindowControls(): WindowControls {
     WindowControls,
     | 'getBackendBaseUrl'
     | 'getBackendRequestContext'
+    | 'backendRequest'
+    | 'startBackendRuntimeEvents'
+    | 'stopBackendRuntimeEvents'
+    | 'onBackendRuntimeEvent'
     | 'setBackgroundOnly'
     | 'checkAccessibility'
     | 'promptAccessibility'
@@ -146,6 +186,7 @@ function buildWindowControls(): WindowControls {
     | 'repairSemanticMemoryRuntime'
     | 'revealSemanticMemoryRuntime'
     | 'openLogsDirectory'
+    | 'readLogTail'
     | 'reportRendererError'
     | 'onPasteError'
     | 'onBackendBootState'
@@ -156,6 +197,12 @@ function buildWindowControls(): WindowControls {
   > = {
     getBackendBaseUrl: () => ipcRenderer.invoke('get-backend-base-url'),
     getBackendRequestContext: () => ipcRenderer.invoke('get-backend-request-context'),
+    backendRequest: (request) => {
+      assertBackendProxyRequest(request)
+      return ipcRenderer.invoke('backend-request', request)
+    },
+    startBackendRuntimeEvents: () => ipcRenderer.invoke('backend-runtime-events-start'),
+    stopBackendRuntimeEvents: () => ipcRenderer.invoke('backend-runtime-events-stop'),
     setBackgroundOnly: (enabled: boolean) => {
       assertBoolean('enabled', enabled)
       return ipcRenderer.invoke('set-background-only', enabled)
@@ -191,6 +238,10 @@ function buildWindowControls(): WindowControls {
     repairSemanticMemoryRuntime: () => ipcRenderer.invoke('repair-semantic-memory-runtime'),
     revealSemanticMemoryRuntime: () => ipcRenderer.invoke('reveal-semantic-memory-runtime'),
     openLogsDirectory: () => ipcRenderer.invoke('open-logs-directory'),
+    readLogTail: (kind: DesktopLogKind) => {
+      assertDesktopLogKind(kind)
+      return ipcRenderer.invoke('read-log-tail', kind)
+    },
     reportRendererError: (payload) => {
       if (typeof payload !== 'object' || payload === null) {
         throw new TypeError('reportRendererError payload must be an object.')
@@ -213,6 +264,7 @@ function buildWindowControls(): WindowControls {
       onChannel('semantic-memory-install-state', callback),
     onCaptureState: (callback) => onChannel('capture-state', callback),
     onLocalLiveTranscription: (callback) => onChannel('local-live-transcription', callback),
+    onBackendRuntimeEvent: (callback) => onChannel('backend-runtime-event', callback),
   }
 
   const recording: Pick<

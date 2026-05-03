@@ -18,6 +18,7 @@ from providers.model_discovery import ModelDiscovery
 from runtime_events import RuntimeEventBroker
 from security.secrets_manager import SecretsManager
 from usage_stats import UsageStatsStore
+from utils.logger import get_logger
 from utils.paths import get_temp_dir, safe_chmod
 from writing_memory import WritingToolsStore
 
@@ -26,12 +27,16 @@ RUNTIME_REVISION_KEYS = (
     "config",
     "providers",
     "history",
+    "tasks",
     "inbox",
     "skills",
     "domains",
     "writing_tools",
     "usage",
 )
+MAX_UPLOADED_WAV_BYTES = 10 * 1024 * 1024
+
+logger = get_logger()
 
 
 @dataclass
@@ -42,7 +47,7 @@ class BackendAppState:
     domain_memory_store: DomainMemoryStore = field(default_factory=DomainMemoryStore)
     writing_tools_store: WritingToolsStore = field(default_factory=WritingToolsStore)
     memory_store: LocalMemoryStore = field(default_factory=LocalMemoryStore)
-    inbox_store: InboxStore = field(default_factory=InboxStore)
+    inbox_store: InboxStore = field(init=False)
     runtime_revisions: dict[str, int] = field(
         default_factory=lambda: {key: 0 for key in RUNTIME_REVISION_KEYS}
     )
@@ -51,6 +56,7 @@ class BackendAppState:
     runtime_event_broker: RuntimeEventBroker = field(init=False)
 
     def __post_init__(self) -> None:
+        self.inbox_store = InboxStore(self.writing_tools_store)
         self.runtime_event_broker = RuntimeEventBroker(self.build_runtime_snapshot)
         self.engine = self._build_engine()
         self.live_transcription_manager = LiveTranscriptionManager(
@@ -63,13 +69,31 @@ class BackendAppState:
             domain_memory_store=self.domain_memory_store,
             writing_tools_store=self.writing_tools_store,
             memory_store=self.memory_store,
+            inbox_store=self.inbox_store,
             runtime_event_emitter=self.emit_runtime_event,
         )
 
     def restart_engine(self) -> SteerVoxEngine:
+        config = self.config_manager.get_config()
+        logger.info(
+            "[BackendState] Restarting engine with Smart=%s/%s router=%s/%s",
+            config.llm.provider,
+            config.llm.model,
+            config.llm.routing.provider,
+            config.llm.routing.model,
+        )
         self.engine.shutdown()
         self.engine = self._build_engine()
         return self.engine
+
+    def rebuild_library_memory(self, *, reset_tombstones: bool = False):
+        config = self.config_manager.get_config()
+        if not getattr(config, "memory", None) or not config.memory.auto_learn_from_history:
+            return self.memory_store.list_memories()
+        return self.memory_store.rebuild_from_library(
+            self.writing_tools_store.list_library_memory_sources(),
+            reset_tombstones=reset_tombstones,
+        )
 
     def bump_runtime_revision(self, scope: str) -> int:
         self.runtime_revisions[scope] = self.runtime_revisions.get(scope, 0) + 1
@@ -143,6 +167,9 @@ class BackendAppState:
             "last_smart_run": self.engine.last_smart_run,
             "smart_preview": self.engine.smart_preview,
             "pending_action_review": self.engine.pending_action_review,
+            "pending_review": self.engine.pending_review,
+            "active_task_run": self.engine.active_task_run,
+            "task_result_summary": self.engine.task_result_summary,
             "live_transcription": self.live_transcription_manager.state,
             "local_stt": build_local_stt_status(
                 config.stt.provider,
@@ -195,6 +222,31 @@ class BackendAppState:
                 "pending_action_review",
                 self.build_status_payload().get("pending_action_review"),
             )
+            self.runtime_event_broker.publish(
+                "pending_review",
+                self.build_status_payload().get("pending_review"),
+            )
+            return
+
+        if event_type == "pending_review":
+            self.runtime_event_broker.publish(
+                "pending_review",
+                self.build_status_payload().get("pending_review"),
+            )
+            return
+
+        if event_type == "active_task_run":
+            self.runtime_event_broker.publish(
+                "active_task_run",
+                self.build_status_payload().get("active_task_run"),
+            )
+            return
+
+        if event_type == "task_result_summary":
+            self.runtime_event_broker.publish(
+                "task_result_summary",
+                self.build_status_payload().get("task_result_summary"),
+            )
             return
 
         if event_type == "live_transcription":
@@ -223,6 +275,7 @@ class BackendAppState:
 
         if event_type in {
             "history_invalidated",
+            "task_runs_invalidated",
             "inbox_invalidated",
             "skills_invalidated",
             "domains_invalidated",
@@ -230,6 +283,7 @@ class BackendAppState:
         }:
             scope = {
                 "history_invalidated": "history",
+                "task_runs_invalidated": "tasks",
                 "inbox_invalidated": "inbox",
                 "skills_invalidated": "skills",
                 "domains_invalidated": "domains",
@@ -277,6 +331,8 @@ class BackendAppState:
 
         if not audio_bytes:
             raise ValueError("Uploaded audio was empty.")
+        if len(audio_bytes) > MAX_UPLOADED_WAV_BYTES:
+            raise ValueError("Uploaded audio is too large.")
 
         with tempfile.NamedTemporaryFile(
             suffix=".wav",

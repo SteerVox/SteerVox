@@ -155,6 +155,7 @@ def build_writing_tools_router(state: BackendAppState) -> APIRouter:
     def delete_history_item(item_id: int):
         try:
             state.writing_tools_store.delete_history_item(item_id)
+            state.rebuild_library_memory(reset_tombstones=False)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         revision = state.bump_runtime_revision("history")
@@ -168,6 +169,7 @@ def build_writing_tools_router(state: BackendAppState) -> APIRouter:
     def clear_history():
         try:
             state.writing_tools_store.clear_history()
+            state.rebuild_library_memory(reset_tombstones=False)
         except RuntimeError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         revision = state.bump_runtime_revision("history")

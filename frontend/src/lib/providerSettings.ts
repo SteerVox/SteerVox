@@ -2,9 +2,13 @@ import type { AppConfig, ProviderModel, ProviderModels } from '../types'
 
 export type ProviderSection = 'llm' | 'stt'
 
+const DEFAULT_LMSTUDIO_MODEL_ID = 'google/gemma-4-e4b'
+const DEFAULT_NVIDIA_LLM_MODEL_ID = 'minimaxai/minimax-m2.7'
+
 const PREFERRED_PROVIDER_MODELS: Record<ProviderSection, Record<string, string>> = {
   llm: {
-    nvidia: 'moonshotai/kimi-k2-instruct-0905',
+    lmstudio: DEFAULT_LMSTUDIO_MODEL_ID,
+    nvidia: DEFAULT_NVIDIA_LLM_MODEL_ID,
     sarvam: 'sarvam-30b',
   },
   stt: {
@@ -19,11 +23,9 @@ const PREFERRED_PROVIDER_MODELS: Record<ProviderSection, Record<string, string>>
 
 export function resolvePreferredProviderModel(section: ProviderSection, provider: string, models: ProviderModel[]) {
   if (section === 'llm' && provider === 'lmstudio') {
-    const recommendedLoaded = models.find((model) => model.recommended_for_smart && model.loaded !== false)
-    if (recommendedLoaded) return recommendedLoaded.id
-
-    const smartLoaded = models.find((model) => model.smart_capable !== false && model.loaded !== false)
-    if (smartLoaded) return smartLoaded.id
+    const defaultModel = models.find((model) => model.id === DEFAULT_LMSTUDIO_MODEL_ID)
+    if (defaultModel) return defaultModel.id
+    return DEFAULT_LMSTUDIO_MODEL_ID
   }
 
   const preferredModelId = PREFERRED_PROVIDER_MODELS[section][provider]
@@ -51,6 +53,49 @@ export function applyProviderSelection(
       ...draftConfig[section],
       provider: newProvider,
       model: nextModel,
+    },
+    ...(section === 'llm'
+      ? {
+          llm: {
+            ...draftConfig.llm,
+            provider: newProvider,
+            model: nextModel,
+            routing: {
+              ...draftConfig.llm.routing,
+              provider: newProvider,
+              model: nextModel,
+            },
+          },
+        }
+      : {}),
+  }
+}
+
+export function applyModelSelection(
+  draftConfig: AppConfig,
+  section: ProviderSection,
+  newModel: string,
+): AppConfig {
+  if (section === 'llm') {
+    return {
+      ...draftConfig,
+      llm: {
+        ...draftConfig.llm,
+        model: newModel,
+        routing: {
+          ...draftConfig.llm.routing,
+          provider: draftConfig.llm.provider,
+          model: newModel,
+        },
+      },
+    }
+  }
+
+  return {
+    ...draftConfig,
+    stt: {
+      ...draftConfig.stt,
+      model: newModel,
     },
   }
 }

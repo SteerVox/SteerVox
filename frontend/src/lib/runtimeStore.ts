@@ -1,6 +1,6 @@
 import { useSyncExternalStore } from 'react'
 
-import { apiGet, getBackendRequestContext } from './api'
+import { apiGet } from './api'
 import { getErrorMessage } from './errors'
 import { createFetchRuntimeEventStream, type RuntimeEventStream, type RuntimeEventStreamFactory } from './runtimeEventStream'
 import { createLatestRequestController, delay, responseData, retryRead, settleRecord } from './runtime'
@@ -9,6 +9,7 @@ import type {
   KeyStatusMap,
   LocalEnvironmentState,
   LocalEnvironmentVerificationTarget,
+  MlxInstallState,
   MicrophonePermissionStatus,
   ProviderModels,
   RuntimeEventEnvelope,
@@ -31,8 +32,12 @@ const EVENT_TYPES: RuntimeEventType[] = [
   'notification',
   'smart_preview',
   'pending_action_review',
+  'pending_review',
+  'active_task_run',
+  'task_result_summary',
   'live_transcription',
   'history_invalidated',
+  'task_runs_invalidated',
   'inbox_invalidated',
   'skills_invalidated',
   'domains_invalidated',
@@ -61,6 +66,7 @@ const INITIAL_REVISIONS: RuntimeRevisionMap = {
   config: 0,
   providers: 0,
   history: 0,
+  tasks: 0,
   inbox: 0,
   skills: 0,
   domains: 0,
@@ -72,6 +78,7 @@ const INITIAL_INVALIDATION_TOKENS: Record<RuntimeInvalidateScope, number> = {
   config: 0,
   providers: 0,
   history: 0,
+  tasks: 0,
   inbox: 0,
   skills: 0,
   domains: 0,
@@ -101,6 +108,7 @@ const INITIAL_LOCAL_ENVIRONMENT: LocalEnvironmentState = {
   microphoneAccess: 'unknown',
   accessibilityTrusted: false,
   contextAccess: INITIAL_CONTEXT_ACCESS,
+  mlxInstallState: null,
   verifyingTarget: null,
 }
 
@@ -125,6 +133,7 @@ function cloneInvalidationTokens(tokens: Record<RuntimeInvalidateScope, number>)
     config: tokens.config,
     providers: tokens.providers,
     history: tokens.history,
+    tasks: tokens.tasks,
     inbox: tokens.inbox,
     skills: tokens.skills,
     domains: tokens.domains,
@@ -141,6 +150,7 @@ function createEnvironmentState(overrides?: Partial<LocalEnvironmentState>): Loc
     microphoneAccess: 'unknown',
     accessibilityTrusted: false,
     contextAccess: INITIAL_CONTEXT_ACCESS,
+    mlxInstallState: null,
     verifyingTarget: null,
     ...overrides,
   }
@@ -151,7 +161,12 @@ function hasImpossibleDeliveryState(status: BackendStatus | null) {
     return false
   }
 
-  return !status.is_processing && !status.pending_paste && !status.pending_notification && !status.pending_action_review
+  return !status.is_processing
+    && !status.pending_paste
+    && !status.pending_notification
+    && !status.pending_action_review
+    && !status.pending_review
+    && !status.active_task_run
 }
 
 export class RuntimeStore {
@@ -284,6 +299,7 @@ export class RuntimeStore {
       microphoneAccess: { status: 'fulfilled'; value: string } | { status: 'rejected'; reason: unknown }
       accessibilityTrusted: { status: 'fulfilled'; value: boolean } | { status: 'rejected'; reason: unknown }
       contextAccess: { status: 'fulfilled'; value: SmartContextAccessStatus } | { status: 'rejected'; reason: unknown }
+      mlxInstallState: { status: 'fulfilled'; value: MlxInstallState | null } | { status: 'rejected'; reason: unknown }
     },
     current: LocalEnvironmentState,
   ): LocalEnvironmentState {
@@ -296,6 +312,9 @@ export class RuntimeStore {
     const contextAccess = settled.contextAccess.status === 'fulfilled'
       ? settled.contextAccess.value || INITIAL_CONTEXT_ACCESS
       : current.contextAccess
+    const mlxInstallState = settled.mlxInstallState.status === 'fulfilled'
+      ? settled.mlxInstallState.value || null
+      : current.mlxInstallState
 
     return createEnvironmentState({
       status: 'ready',
@@ -304,6 +323,7 @@ export class RuntimeStore {
       microphoneAccess,
       accessibilityTrusted,
       contextAccess,
+      mlxInstallState,
       verifyingTarget: null,
     })
   }
@@ -351,6 +371,7 @@ export class RuntimeStore {
             contextAccess: promptContext
               ? window.windowControls?.promptSmartContextAccess?.() ?? Promise.resolve(INITIAL_CONTEXT_ACCESS)
               : window.windowControls?.checkSmartContextAccess?.() ?? Promise.resolve(INITIAL_CONTEXT_ACCESS),
+            mlxInstallState: window.windowControls?.getMlxInstallState?.() ?? Promise.resolve(null),
           })
         ), { signal: request.signal })
 
@@ -517,7 +538,50 @@ export class RuntimeStore {
         }
         return
       case 'pending_paste':
+        this.setState((current) => ({
+          ...current,
+          snapshot: {
+            ...current.snapshot,
+            status: current.snapshot.status
+              ? {
+                  ...current.snapshot.status,
+                  pending_paste: (envelope.data as {
+                    pending_paste?: BackendStatus['pending_paste']
+                    pending_paste_text?: BackendStatus['pending_paste_text']
+                  })?.pending_paste ?? null,
+                  pending_paste_text: (envelope.data as {
+                    pending_paste?: BackendStatus['pending_paste']
+                    pending_paste_text?: BackendStatus['pending_paste_text']
+                  })?.pending_paste_text ?? null,
+                  phase: (envelope.data as {
+                    pending_paste?: BackendStatus['pending_paste']
+                  })?.pending_paste
+                    ? 'preparing_paste'
+                    : current.snapshot.status.phase,
+                  phase_label: (envelope.data as {
+                    pending_paste?: BackendStatus['pending_paste']
+                  })?.pending_paste
+                    ? 'Preparing paste'
+                    : current.snapshot.status.phase_label,
+                }
+              : current.snapshot.status,
+          },
+        }))
+        void this.refreshStatus(envelope.seq)
+        return
       case 'notification':
+        this.setState((current) => ({
+          ...current,
+          snapshot: {
+            ...current.snapshot,
+            status: current.snapshot.status
+              ? {
+                  ...current.snapshot.status,
+                  pending_notification: envelope.data as BackendStatus['pending_notification'],
+                }
+              : current.snapshot.status,
+          },
+        }))
         return
       case 'smart_preview':
         this.setState((current) => ({
@@ -542,6 +606,48 @@ export class RuntimeStore {
               ? {
                   ...current.snapshot.status,
                   pending_action_review: envelope.data as BackendStatus['pending_action_review'],
+                }
+              : current.snapshot.status,
+          },
+        }))
+        return
+      case 'pending_review':
+        this.setState((current) => ({
+          ...current,
+          snapshot: {
+            ...current.snapshot,
+            status: current.snapshot.status
+              ? {
+                  ...current.snapshot.status,
+                  pending_review: envelope.data as BackendStatus['pending_review'],
+                }
+              : current.snapshot.status,
+          },
+        }))
+        return
+      case 'active_task_run':
+        this.setState((current) => ({
+          ...current,
+          snapshot: {
+            ...current.snapshot,
+            status: current.snapshot.status
+              ? {
+                  ...current.snapshot.status,
+                  active_task_run: envelope.data as BackendStatus['active_task_run'],
+                }
+              : current.snapshot.status,
+          },
+        }))
+        return
+      case 'task_result_summary':
+        this.setState((current) => ({
+          ...current,
+          snapshot: {
+            ...current.snapshot,
+            status: current.snapshot.status
+              ? {
+                  ...current.snapshot.status,
+                  task_result_summary: envelope.data as BackendStatus['task_result_summary'],
                 }
               : current.snapshot.status,
           },
@@ -600,6 +706,9 @@ export class RuntimeStore {
       case 'history_invalidated':
         this.applyInvalidation('history', Number((envelope.data as { revision?: number })?.revision || 0))
         return
+      case 'task_runs_invalidated':
+        this.applyInvalidation('tasks', Number((envelope.data as { revision?: number })?.revision || 0))
+        return
       case 'inbox_invalidated':
         this.applyInvalidation('inbox', Number((envelope.data as { revision?: number })?.revision || 0))
         return
@@ -652,8 +761,7 @@ export class RuntimeStore {
     }))
 
     try {
-      const requestContext = await getBackendRequestContext()
-      const nextStream = await this.createEventStream(requestContext)
+      const nextStream = await this.createEventStream()
       this.eventStream = nextStream
 
       nextStream.onopen = () => {

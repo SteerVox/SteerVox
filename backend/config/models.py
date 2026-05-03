@@ -3,6 +3,9 @@ from typing import List, Literal, Optional
 
 from domains.models import AppDomainDefault, DomainsConfig
 
+LMSTUDIO_LEGACY_PLACEHOLDER_MODEL_ID = "local-model"
+DEFAULT_LMSTUDIO_MODEL_ID = "google/gemma-4-e4b"
+
 class STTConfig(BaseModel):
     provider: str = Field(default="mlx-whisper", description="The default STT provider (e.g., mlx-whisper, groq, deepgram, openai, nvidia, sarvam)")
     model: str = Field(default="mlx-community/whisper-large-v3-turbo", description="The specific model used for STT")
@@ -43,21 +46,59 @@ class STTConfig(BaseModel):
 class RoutingModelConfig(BaseModel):
     enabled: bool = Field(default=True, description="Enable the optional Smart router fallback model for ambiguous Smart Mode requests.")
     provider: str = Field(default="lmstudio", description="The provider used by the Smart router fallback model.")
-    model: str = Field(default="local-model", description="The specific model used by the Smart router fallback.")
+    model: str = Field(default=DEFAULT_LMSTUDIO_MODEL_ID, description="The specific model used by the Smart router fallback.")
     temperature: float = Field(default=0.0, description="Temperature for the Smart router model.")
 
 
 class LLMConfig(BaseModel):
     provider: str = Field(default="lmstudio", description="The default LLM provider (e.g., lmstudio, groq, anthropic, openai, gemini, nvidia, sarvam)")
-    model: str = Field(default="local-model", description="The specific model used for the Supervisor Agent")
+    model: str = Field(default=DEFAULT_LMSTUDIO_MODEL_ID, description="The specific model used for the Supervisor Agent")
     temperature: float = Field(default=0.0, description="Temperature for generation (lower is generally better for reliable code/formatting)")
     routing: RoutingModelConfig = Field(default_factory=RoutingModelConfig)
 
 
 class VisionConfig(BaseModel):
     enabled: bool = Field(default=True, description="Capture the primary display during Smart Mode and ask a local vision-capable LM Studio model for extra context.")
-    model: Optional[str] = Field(default=None, description="Optional explicit LM Studio vision model id. When empty, Smart Mode reuses the selected LM Studio text model if it supports vision.")
+    model: Optional[str] = Field(default=DEFAULT_LMSTUDIO_MODEL_ID, description="The default LM Studio vision model id. Smart Mode still reuses the selected LM Studio text model first when it supports vision.")
     timeout_ms: int = Field(default=2500, ge=500, le=10000, description="Timeout for local vision context extraction.")
+
+
+class LocalTaskShellConfig(BaseModel):
+    enabled: bool = Field(
+        default=True,
+        description="Enable the native local task shell for reviewed, local-only command execution.",
+    )
+    safety_mode: Literal["strict"] = Field(
+        default="strict",
+        description="The local task shell currently runs only in strict local-only mode.",
+    )
+    allowed_directories: List[str] = Field(
+        default_factory=list,
+        description="Optional extra local directories that the reviewed task shell may use as working roots.",
+    )
+
+    @field_validator("allowed_directories", mode="before")
+    @classmethod
+    def normalize_allowed_directories(cls, value: object) -> List[str]:
+        if value is None:
+            return []
+        if isinstance(value, str):
+            items = [segment.strip() for segment in value.split("\n")]
+        elif isinstance(value, list):
+            items = [str(segment).strip() for segment in value]
+        else:
+            raise ValueError("allowed_directories must be a list or newline-delimited string.")
+
+        normalized: List[str] = []
+        seen: set[str] = set()
+        for item in items:
+            if not item:
+                continue
+            if item in seen:
+                continue
+            seen.add(item)
+            normalized.append(item)
+        return normalized
 
 
 class ActionsConfig(BaseModel):
@@ -72,6 +113,10 @@ class ActionsConfig(BaseModel):
     experimental_media_controls: bool = Field(
         default=False,
         description="Enable beta system-wide media transport controls such as global play/pause and track navigation.",
+    )
+    local_task_shell: LocalTaskShellConfig = Field(
+        default_factory=LocalTaskShellConfig,
+        description="Settings for the native reviewed local task shell.",
     )
 
 class AppSkillDefault(BaseModel):
@@ -186,6 +231,10 @@ class DebugConfig(BaseModel):
         default=False,
         description="When enabled, timestamped WAV debug recordings are kept on disk."
     )
+    developer_mode: bool = Field(
+        default=False,
+        description="Reveal advanced diagnostics and raw editing controls intended for power users.",
+    )
 
 
 class MemoryConfig(BaseModel):
@@ -195,7 +244,7 @@ class MemoryConfig(BaseModel):
     )
     auto_learn_from_history: bool = Field(
         default=True,
-        description="Learn recurring preferences and user facts from local history entries only.",
+        description="Learn recurring preferences and user facts from saved local Library items only.",
     )
     semantic_retrieval_enabled: bool = Field(
         default=True,

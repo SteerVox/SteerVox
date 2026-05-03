@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional
@@ -6,6 +7,7 @@ from typing import Any, Callable, Dict, Optional
 from agent.router import infer_format_preference
 from providers.llm_factory import LLMFactory
 from providers.lmstudio_native import LMStudioNativeChat, THINKING_BLOCK_PATTERN
+from providers.model_discovery import ModelDiscovery
 from agent.skills.models import SkillDefinition
 from utils.logger import get_logger
 
@@ -13,7 +15,7 @@ logger = get_logger()
 CASUAL_TONE_KEYWORDS = ("slack", "discord", "teams", "messages", "signal", "telegram")
 FORMAL_TONE_KEYWORDS = ("outlook", "mail", "gmail", "superhuman", "word", "pages", "docs")
 PROFESSIONAL_TONE_KEYWORDS = ("jira", "linear", "asana", "notion", "confluence")
-LOCAL_SMART_TIMEOUT_SECONDS = 12.0
+LOCAL_SMART_TIMEOUT_SECONDS = 60.0
 REMOTE_SMART_TIMEOUT_SECONDS = 18.0
 REMOTE_PROMPT_HEAVY_TIMEOUT_SECONDS = 24.0
 TIMEOUT_ERROR_MARKERS = (
@@ -32,6 +34,10 @@ PROMPT_HEAVY_STYLES = {
     "chat_ready_prompt",
     "structured_agent_schema",
 }
+PROMPT_DEPTH_SIGNAL_PATTERN = re.compile(
+    r"\b(?:deep research|detailed(?: analysis)?|thorough|comprehensive|analy[sz]e|compar(?:e|ison)|explain why|trade[- ]?offs?|step[- ]by[- ]step|acceptance criteria|verify|verification|edge cases?|failure modes?)\b",
+    re.IGNORECASE,
+)
 
 
 @dataclass
@@ -43,6 +49,9 @@ class SupervisorResponse:
     error: Optional[str] = None
     timeout_budget_ms: Optional[int] = None
     timeout_triggered: bool = False
+    structured_output_mode: str = "none"
+    structured_output_schema: Optional[str] = None
+    structured_output_failure_kind: str = "none"
 
 
 @dataclass
@@ -58,6 +67,9 @@ class SupervisorPromptSpec:
     llm_max_tokens: Optional[int] = None
     llm_context_length: Optional[int] = None
     llm_reasoning_mode: Optional[str] = None
+    llm_response_format: Optional[dict[str, Any]] = None
+    structured_output_schema_name: Optional[str] = None
+    streaming_allowed: bool = True
     compact_profile: bool = False
 
 
@@ -99,6 +111,7 @@ class SupervisorAgent:
                 max_tokens=prompt_spec.llm_max_tokens,
                 context_length=prompt_spec.llm_context_length,
                 reasoning_mode=prompt_spec.llm_reasoning_mode,
+                response_format=prompt_spec.llm_response_format,
             )
         except Exception as e:
             logger.error(f"Failed to initialize LLM for agent processing: {e}")
@@ -110,6 +123,9 @@ class SupervisorAgent:
                 error="Smart Mode could not initialize the selected language model. Check your provider setup and try again.",
                 timeout_budget_ms=self._timeout_budget_ms(prompt_spec.llm_timeout),
                 timeout_triggered=False,
+                structured_output_mode="json_schema" if prompt_spec.llm_response_format else "none",
+                structured_output_schema=prompt_spec.structured_output_schema_name,
+                structured_output_failure_kind="transport_error" if prompt_spec.llm_response_format else "none",
             )
 
         from langchain_core.prompts import ChatPromptTemplate, HumanMessagePromptTemplate, SystemMessagePromptTemplate
@@ -127,7 +143,7 @@ class SupervisorAgent:
         started_at = time.perf_counter()
         try:
             final_text: Optional[str] = None
-            if preview_callback is not None:
+            if preview_callback is not None and prompt_spec.streaming_allowed:
                 final_text = self._invoke_with_preview(
                     llm=llm,
                     prompt_value=prompt_value,
@@ -139,6 +155,30 @@ class SupervisorAgent:
                 response = chain.invoke(prompt_spec.invoke_payload)
                 final_text = self._normalize_model_output(response.content)
 
+            structured_failure_kind = "none"
+            if prompt_spec.llm_response_format is not None:
+                final_text, structured_failure_kind = self._normalize_structured_output(
+                    raw_text=final_text,
+                    os_context=os_context,
+                    schema_name=prompt_spec.structured_output_schema_name,
+                    transcript=raw_transcript,
+                )
+                if structured_failure_kind != "none":
+                    return SupervisorResponse(
+                        text=None,
+                        context_fields_sent=prompt_spec.context_fields_sent,
+                        payload_estimated_bytes=prompt_spec.payload_estimated_bytes,
+                        latency_ms=int((time.perf_counter() - started_at) * 1000),
+                        error="Local Smart could not validate the structured output from the local model.",
+                        timeout_budget_ms=self._timeout_budget_ms(prompt_spec.llm_timeout),
+                        timeout_triggered=False,
+                        structured_output_mode="json_schema",
+                        structured_output_schema=prompt_spec.structured_output_schema_name,
+                        structured_output_failure_kind=structured_failure_kind,
+                    )
+                if preview_callback is not None and final_text:
+                    self._emit_preview_text(preview_callback, final_text)
+
             elapsed_ms = int((time.perf_counter() - started_at) * 1000)
 
             return SupervisorResponse(
@@ -148,6 +188,9 @@ class SupervisorAgent:
                 latency_ms=elapsed_ms,
                 timeout_budget_ms=self._timeout_budget_ms(prompt_spec.llm_timeout),
                 timeout_triggered=False,
+                structured_output_mode="json_schema" if prompt_spec.llm_response_format else "none",
+                structured_output_schema=prompt_spec.structured_output_schema_name,
+                structured_output_failure_kind="none",
             )
 
         except Exception as e:
@@ -156,7 +199,7 @@ class SupervisorAgent:
             error_message = "Smart Mode failed while generating the transformed result. Check your provider connection and try again."
             if timeout_triggered:
                 if self.provider.lower() == "lmstudio":
-                    error_message = "LM Studio local model timed out while generating output. Try a smaller model, reduce the prompt context, or try again."
+                    error_message = "LM Studio local model timed out while generating output. The request was not completed; try again when the local model is ready."
                 else:
                     error_message = f"{self.provider.title()} timed out while generating output. Smart Mode will fall back to safe local cleanup."
             elif self.provider.lower() == "lmstudio" and isinstance(e, RuntimeError):
@@ -171,6 +214,9 @@ class SupervisorAgent:
                 error=error_message,
                 timeout_budget_ms=self._timeout_budget_ms(prompt_spec.llm_timeout),
                 timeout_triggered=timeout_triggered,
+                structured_output_mode="json_schema" if prompt_spec.llm_response_format else "none",
+                structured_output_schema=prompt_spec.structured_output_schema_name,
+                structured_output_failure_kind="transport_error" if prompt_spec.llm_response_format else "none",
             )
 
     def _invoke_with_preview(
@@ -289,8 +335,49 @@ class SupervisorAgent:
             final_text = stripped_thinking
         return final_text.strip()
 
+    def _normalize_structured_output(
+        self,
+        *,
+        raw_text: str,
+        os_context: Dict[str, Any],
+        schema_name: Optional[str],
+        transcript: str,
+    ) -> tuple[str, str]:
+        normalized = self._normalize_model_output(raw_text)
+        if not schema_name:
+            return normalized, "none"
+        if schema_name != "local_email_output":
+            return normalized, "none"
+        try:
+            payload = json.loads(normalized)
+        except json.JSONDecodeError:
+            return "", "grammar_truncation_error"
+        if not isinstance(payload, dict):
+            return "", "schema_validation_error"
+
+        subject = payload.get("subject")
+        body = payload.get("body")
+        if subject is not None and not isinstance(subject, str):
+            return "", "schema_validation_error"
+        if not isinstance(body, str):
+            return "", "schema_validation_error"
+
+        subject_text = str(subject or "").strip()
+        body_text = str(body or "").strip()
+        surface_kind = str(os_context.get("surface_kind") or "").strip().lower()
+        wants_subject = "subject" in str(transcript or "").lower()
+        if surface_kind == "email_subject":
+            return subject_text or body_text, "none"
+        if surface_kind == "email_body":
+            if wants_subject and subject_text:
+                return "\n".join(part for part in (f"Subject: {subject_text}", "", body_text) if part), "none"
+            return body_text, "none"
+        if subject_text and body_text:
+            return f"Subject: {subject_text}\n\n{body_text}", "none"
+        return subject_text or body_text, "none"
+
     def _build_prompt_spec(self, raw_transcript: str, os_context: Dict[str, Any], skill: SkillDefinition) -> SupervisorPromptSpec:
-        compact_profile = self._should_use_compact_local_profile(skill)
+        compact_profile = False
         slim_context = self._should_use_slim_prompt_context(skill)
         context_block, context_fields_sent = self._build_context_block(
             os_context,
@@ -307,62 +394,12 @@ class SupervisorAgent:
             os_context,
             enabled=not slim_context,
         )
-        local_depth_guidance_block, local_depth_fields_sent = self._build_local_depth_guidance_block(skill)
+        local_depth_guidance_block, local_depth_fields_sent = self._build_local_depth_guidance_block(
+            skill,
+            raw_transcript,
+        )
         all_context_fields_sent = context_fields_sent + external_fields_sent + screen_context_fields_sent + domain_fields_sent + memory_fields_sent + surface_fields_sent + format_fields_sent + tone_fields_sent + local_depth_fields_sent
         contract_block = self._build_contract_block(skill, minimal=slim_context)
-
-        if compact_profile:
-            instructions_block = self._build_compact_instructions_block(
-                context_block=context_block,
-                domain_block=domain_block,
-                memory_block=memory_block,
-                surface_contract_block=surface_contract_block,
-                format_preference_block=format_preference_block,
-                tone_guidance_block=tone_guidance_block,
-                external_block=external_block,
-                screen_context_block=screen_context_block,
-                local_depth_guidance_block=local_depth_guidance_block,
-            )
-            source_material_block = self._build_source_material_block(os_context)
-            payload_estimated_bytes = len(json.dumps({
-                "prompt": skill.prompt,
-                "contract": contract_block,
-                "instructions": instructions_block,
-                "transcript": raw_transcript,
-                "source_material": source_material_block,
-                "memory_context": memory_block,
-            }).encode("utf-8"))
-            return SupervisorPromptSpec(
-                system_template="""{system_instruction}
-
-Return only the transformed output.
-
---- SMART MODE SKILL CONTRACT ---
-{contract_block}
----------------------------------
-{instructions_block}
-""",
-                human_template="""Instruction:
-{transcript}
-{source_material_block}
-""",
-                invoke_payload={
-                    "system_instruction": skill.prompt,
-                    "contract_block": contract_block,
-                    "instructions_block": instructions_block or "",
-                    "transcript": raw_transcript,
-                    "source_material_block": source_material_block or "",
-                },
-                context_fields_sent=all_context_fields_sent,
-                payload_estimated_bytes=payload_estimated_bytes,
-                llm_temperature=min(self.temperature, 0.1),
-                llm_timeout=LOCAL_SMART_TIMEOUT_SECONDS,
-                llm_max_retries=0,
-                llm_max_tokens=self._resolve_local_max_tokens(skill),
-                llm_context_length=self._resolve_local_context_length(skill),
-                llm_reasoning_mode="off",
-                compact_profile=True,
-            )
 
         payload_estimated_bytes = len(json.dumps({
             "prompt": skill.prompt,
@@ -423,7 +460,7 @@ Return only the transformed output.
             llm_max_retries=0,
             llm_max_tokens=self._resolve_local_max_tokens(skill) if local_full_profile else None,
             llm_context_length=self._resolve_local_context_length(skill) if local_full_profile else None,
-            llm_reasoning_mode="off" if local_full_profile else None,
+            llm_reasoning_mode=None,
         )
 
     def _resolve_remote_timeout(self, skill: SkillDefinition) -> float:
@@ -447,15 +484,6 @@ Return only the transformed output.
         ).lower()
         return any(marker in detail for marker in TIMEOUT_ERROR_MARKERS)
 
-    def _should_use_compact_local_profile(self, skill: SkillDefinition) -> bool:
-        if self.provider.lower() != "lmstudio":
-            return False
-        if self._is_prompt_heavy_skill(skill):
-            return False
-
-        lowered_model = self.model_name.lower()
-        return any(marker in lowered_model for marker in ("1b", "2b", "3b", "4b", "nano", "mini"))
-
     def _is_prompt_heavy_skill(self, skill: SkillDefinition) -> bool:
         return (skill.style or "").strip().lower() in PROMPT_HEAVY_STYLES
 
@@ -464,69 +492,87 @@ Return only the transformed output.
 
     def _resolve_local_max_tokens(self, skill: SkillDefinition) -> int:
         if self._is_prompt_heavy_skill(skill):
-            return 3000
+            return 8192
         if skill.output_mode == "code":
-            return 2200
+            return 4096
         if skill.output_mode == "bullets":
-            return 1200
+            return 3000
         if skill.max_chars and skill.max_chars <= 120:
             return 512
         if skill.max_chars and skill.max_chars <= 400:
-            return 900
+            return 1200
         if skill.max_chars and skill.max_chars <= 1200:
-            return 1600
-        return 2200
+            return 3000
+        return 4096
 
     def _resolve_local_context_length(self, skill: SkillDefinition) -> int:
-        if self._is_prompt_heavy_skill(skill):
-            return 8192
-        return 6144
+        resolved = self._resolve_loaded_lmstudio_context_length()
+        if resolved is not None:
+            return resolved
+        return 8192
 
-    def _build_compact_instructions_block(
-        self,
-        *,
-        context_block: str,
-        domain_block: str,
-        memory_block: str,
-        surface_contract_block: str,
-        format_preference_block: str,
-        tone_guidance_block: str,
-        external_block: str,
-        screen_context_block: str,
-        local_depth_guidance_block: str,
-    ) -> str:
-        sections = [
-            self._format_context_section(context_block),
-            self._format_domain_section(domain_block),
-            self._format_memory_section(memory_block),
-            self._format_surface_section(surface_contract_block),
-            self._format_format_section(format_preference_block),
-            self._format_tone_section(tone_guidance_block),
-            self._format_local_depth_section(local_depth_guidance_block),
-            self._format_screen_context_section(screen_context_block),
-            self._format_external_text_section(external_block),
-        ]
-        rendered_sections = [section.strip() for section in sections if section.strip()]
-        return "\n\n".join(rendered_sections)
+    def _resolve_loaded_lmstudio_context_length(self) -> Optional[int]:
+        if self.provider.lower() != "lmstudio":
+            return None
 
-    def _build_source_material_block(self, os_context: Dict[str, Any]) -> str:
-        external_text = str(os_context.get("external_text") or "").strip()
-        if not external_text:
-            return ""
-        source = str(os_context.get("external_text_source") or "clipboard").strip().lower()
-        if source == "selection":
-            source_label = "selected text"
-        elif source == "transcript_inline":
-            source_label = "spoken source text"
-        elif source == "screen_context":
-            source_label = "screen context"
+        requested_model = str(self.model_name or "").strip()
+        try:
+            catalog = ModelDiscovery.get_lmstudio_model_catalog()
+        except Exception as exc:
+            logger.debug("Unable to inspect LM Studio model catalog for context length: %s", exc)
+            return None
+
+        if not catalog:
+            return None
+
+        if requested_model and requested_model != "local-model":
+            candidates = [
+                item
+                for item in catalog
+                if str(item.get("key") or item.get("id") or "").strip() == requested_model
+            ]
         else:
-            source_label = "clipboard text"
-        return "\n".join([
-            "",
-            f"Source text to transform ({source_label}):",
-            external_text,
-        ]).strip()
+            candidates = [
+                item
+                for item in catalog
+                if isinstance(item, dict) and ModelDiscovery._lmstudio_model_loaded(item)
+            ]
+
+        resolved_lengths = [
+            context_length
+            for context_length in (
+                self._extract_loaded_lmstudio_context_length(item)
+                for item in candidates
+            )
+            if context_length is not None
+        ]
+        if not resolved_lengths:
+            return None
+        return max(resolved_lengths)
+
+    def _extract_loaded_lmstudio_context_length(self, item: Dict[str, Any]) -> Optional[int]:
+        loaded_instances = item.get("loaded_instances")
+        if not isinstance(loaded_instances, list):
+            return None
+
+        resolved_lengths: list[int] = []
+        for instance in loaded_instances:
+            if not isinstance(instance, dict):
+                continue
+            config = instance.get("config")
+            if not isinstance(config, dict):
+                continue
+            raw_value = config.get("context_length")
+            try:
+                parsed = int(raw_value)
+            except (TypeError, ValueError):
+                continue
+            if parsed > 0:
+                resolved_lengths.append(parsed)
+
+        if not resolved_lengths:
+            return None
+        return max(resolved_lengths)
 
     def _build_context_block(
         self,
@@ -836,25 +882,40 @@ Return only the transformed output.
 ------------------------
 """
 
-    def _build_local_depth_guidance_block(self, skill: SkillDefinition) -> tuple[str, list[str]]:
+    def _build_local_depth_guidance_block(self, skill: SkillDefinition, raw_transcript: str) -> tuple[str, list[str]]:
         if not self._is_prompt_heavy_skill(skill):
             return "", []
 
         style = (skill.style or "").strip().lower()
-        lines = [
-            "Depth Requirement: Do not collapse this into a one-line or two-line summary.",
-            "Return a directly usable prompt or engineering brief with enough detail to paste into the target AI tool immediately.",
-        ]
-        if style == "chat_ready_prompt":
-            lines.append("Prefer a direct request over meta prompt scaffolding.")
-            lines.append("Use headings or bullets only when they materially improve clarity.")
-            lines.append("Do not default to Role, Context, Constraints, Output Format, or Edge Cases for simple chatbot requests.")
-        elif style == "structured_prompt":
-            lines.append("Prefer a direct ready-to-paste prompt unless the user explicitly asked for a system or agent prompt.")
-            lines.append("Use sections such as Role, Objective, Context, Constraints, Output Format, and Edge Cases only when they materially improve the result.")
+        detailed_requested = self._transcript_requests_detailed_output(raw_transcript)
+
+        if detailed_requested:
+            lines = [
+                "Depth Requirement: The transcript asks for substantial detail. Do not collapse this into a one-line or two-line summary.",
+                "Preserve the requested scope, constraints, examples, verification needs, and reference material in a directly usable prompt or engineering brief.",
+                "Use only the sections that materially help, chosen from Goal, Context, Inputs/Reference Material, Constraints, Deliverables, Output Format, Verification, and Risks/Open Questions.",
+            ]
         else:
-            lines.append("Include concrete scope, constraints, implementation details, and verification notes when the transcript implies them.")
+            lines = [
+                "Depth Requirement: Match the user's requested depth. Keep simple requests direct and shorter.",
+                "Return a directly usable prompt or engineering brief that is easy to paste into the target AI tool immediately.",
+            ]
+        if style == "chat_ready_prompt":
+            lines.append("Prefer a direct request over unnecessary meta scaffolding.")
+            lines.append("Use headings or bullets when they materially improve clarity or when the request clearly benefits from structure.")
+        elif style == "structured_prompt":
+            lines.append("Use sections only when they materially improve the result or when the user is clearly asking for a system or agent prompt.")
+            if detailed_requested:
+                lines.append("When a system or agent prompt is implied, sections such as Role or Objective are allowed when they materially improve the result.")
+        else:
+            lines.append("Keep the primary requested outcome first, then organize scope, constraints, implementation details, and verification clearly when they are implied.")
         return "\n".join(lines), ["local_depth_guidance"]
+
+    def _transcript_requests_detailed_output(self, raw_transcript: str) -> bool:
+        normalized = " ".join(str(raw_transcript or "").split())
+        if not normalized:
+            return False
+        return bool(PROMPT_DEPTH_SIGNAL_PATTERN.search(normalized))
 
     def _format_local_depth_section(self, local_depth_guidance_block: str) -> str:
         if not local_depth_guidance_block:

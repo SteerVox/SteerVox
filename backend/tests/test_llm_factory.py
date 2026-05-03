@@ -95,11 +95,11 @@ def test_llm_factory_builds_nvidia_client_via_openai_compat(monkeypatch):
     monkeypatch.setattr("security.secrets_manager.SecretsManager.get_api_key", lambda provider: "nvidia-key")
     monkeypatch.setitem(sys.modules, "langchain_openai", types.SimpleNamespace(ChatOpenAI=FakeChatOpenAI))
 
-    client = LLMFactory.get_llm("nvidia", "moonshotai/kimi-k2-instruct-0905", 0.0)
+    client = LLMFactory.get_llm("nvidia", "minimaxai/minimax-m2.7", 0.0)
 
     assert client is not None
     assert calls == [{
-        "model": "moonshotai/kimi-k2-instruct-0905",
+        "model": "minimaxai/minimax-m2.7",
         "temperature": 0.0,
         "api_key": "nvidia-key",
         "base_url": "https://integrate.api.nvidia.com/v1",
@@ -124,7 +124,7 @@ def test_llm_factory_forwards_timeout_controls_to_remote_openai_family_clients(m
 
     LLMFactory.get_llm(
         "nvidia",
-        "moonshotai/kimi-k2-instruct-0905",
+        "minimaxai/minimax-m2.7",
         0.0,
         timeout=18.0,
         max_retries=0,
@@ -132,7 +132,7 @@ def test_llm_factory_forwards_timeout_controls_to_remote_openai_family_clients(m
     )
 
     assert calls == [{
-        "model": "moonshotai/kimi-k2-instruct-0905",
+        "model": "minimaxai/minimax-m2.7",
         "temperature": 0.0,
         "api_key": "nvidia-key",
         "base_url": "https://integrate.api.nvidia.com/v1",
@@ -208,13 +208,13 @@ def test_llm_factory_builds_lmstudio_client_without_user_key(monkeypatch):
     assert response.content == "Local reply."
     assert calls == [{
         "method": "POST",
-        "url": "http://localhost:1234/api/v1/chat",
+        "url": "http://localhost:1234/v1/chat/completions",
         "json": {
             "model": "qwen2.5-0.5b-instruct-mlx",
-            "input": "Hello from local LM Studio.",
+            "messages": [{"role": "user", "content": "Hello from local LM Studio."}],
             "temperature": 0.0,
             "stream": False,
-            "store": False,
+            "context_length": 8192,
         },
         "headers": {"Content-Type": "application/json"},
         "timeout": 30.0,
@@ -338,16 +338,17 @@ def test_llm_factory_applies_local_request_tuning_for_lmstudio(monkeypatch):
     assert response.content == "Structured local output."
     assert calls == [{
         "method": "POST",
-        "url": "http://localhost:1234/api/v1/chat",
+        "url": "http://localhost:1234/v1/chat/completions",
         "json": {
             "model": "qwen2.5-0.5b-instruct-mlx",
-            "input": "Rewrite this update",
+            "messages": [
+                {"role": "system", "content": "You are concise."},
+                {"role": "user", "content": "Rewrite this update"},
+            ],
             "temperature": 0.1,
             "stream": False,
-            "store": False,
-            "system_prompt": "You are concise.",
-            "max_output_tokens": 192,
-            "context_length": 4096,
+            "max_tokens": 192,
+            "context_length": 8192,
         },
         "headers": {"Content-Type": "application/json"},
         "timeout": 12.0,

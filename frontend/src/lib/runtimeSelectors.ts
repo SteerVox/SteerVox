@@ -30,6 +30,9 @@ export function selectReadinessState(state: RuntimeStoreState) {
     state.snapshot.keysSet,
     state.localEnvironment.microphoneAccess,
     state.localEnvironment.accessibilityTrusted,
+    state.snapshot.providerModels,
+    state.snapshot.status,
+    state.localEnvironment.mlxInstallState,
   )
 }
 
@@ -45,6 +48,9 @@ export function selectOnboardingState(state: RuntimeStoreState) {
     state.localEnvironment.microphoneAccess,
     state.localEnvironment.accessibilityTrusted,
     state.snapshot.usageStats,
+    state.snapshot.providerModels,
+    state.snapshot.status,
+    state.localEnvironment.mlxInstallState,
   )
 }
 
@@ -98,7 +104,6 @@ export function selectPrimaryAttentionIssue(state: RuntimeStoreState): RuntimeAt
   if (issue) {
     return {
       ...issue,
-      step: issue.label === 'Run first dictation' ? 'voice' : 'voice',
     }
   }
 
