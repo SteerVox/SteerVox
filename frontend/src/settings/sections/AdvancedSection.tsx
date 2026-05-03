@@ -1,5 +1,6 @@
 import { BrandedProgressLoader } from '../../components/BrandedProgressLoader'
 import { SetupIcon, ShieldIcon, SparkIcon } from '../../components/BrandIcons'
+import { DISPLAY_NAME } from '../../../shared/branding'
 import {
   type AppConfig,
   type AppDomainDefault,
@@ -872,7 +873,7 @@ export function AdvancedSection({
           <div className="rounded-2xl border border-white/8 bg-black/20 px-4 py-3 text-sm leading-6 text-text-secondary">
             {developerMode
               ? 'Developer mode is enabled. Advanced diagnostics, raw fallback controls, and runtime internals are visible in this app session.'
-              : 'Developer mode is off. SteerVox keeps diagnostics summarized and hides raw controls until you explicitly need them.'}
+              : `Developer mode is off. ${DISPLAY_NAME} keeps diagnostics summarized and hides raw controls until you explicitly need them.`}
           </div>
         </div>
       </SectionCard>
@@ -976,7 +977,7 @@ export function AdvancedSection({
         <div className="grid gap-5">
           <ToggleCard
             title="Enable local task shell"
-            description="Allow SteerVox to run reviewed local tasks such as repo-local search, diff, and test commands after approval."
+            description={`Allow ${DISPLAY_NAME} to run reviewed local tasks such as repo-local search, diff, and test commands after approval.`}
             checked={localTaskShell.enabled}
             onChange={(checked) => onSetDraftConfig({
               ...draftConfig,
@@ -1019,7 +1020,7 @@ export function AdvancedSection({
               placeholder="/Users/you/Work/project-one&#10;/Users/you/Work/project-two"
             />
             <p className="text-sm leading-6 text-text-secondary">
-              One absolute path per line. SteerVox always allows the current workspace root and app-home storage; use this list to add extra local roots explicitly.
+              One absolute path per line. {DISPLAY_NAME} always allows the current workspace root and app-home storage; use this list to add extra local roots explicitly.
             </p>
           </label>
         </div>
@@ -1067,7 +1068,7 @@ export function AdvancedSection({
 
           <ToggleCard
             title="Semantic retrieval"
-            description="Improve paraphrase matching with an optional local semantic runtime. If it is not installed, SteerVox falls back to the lighter lexical memory path automatically."
+            description={`Improve paraphrase matching with an optional local semantic runtime. If it is not installed, ${DISPLAY_NAME} falls back to the lighter lexical memory path automatically.`}
             checked={draftConfig.memory.semantic_retrieval_enabled}
             disabled={!draftConfig.memory.enabled}
             onChange={(checked) => onSetDraftConfig({

@@ -411,8 +411,8 @@ export async function syncFrontendPackageJson(manifest) {
 export async function syncFrontendIndexHtml(manifest) {
   const raw = await fs.readFile(FRONTEND_INDEX_HTML_PATH, 'utf8')
   const next = raw
-    .replace(/<link rel="icon"[^>]*href="[^"]*"[^>]*>/, `    <link rel="icon" type="image/png" href="${toPublicAssetPath(manifest.assets.brandMarkPng)}" />`)
-    .replace(/<title>[\s\S]*?<\/title>/, `    <title>${manifest.windowTitles.main}</title>`)
+    .replace(/^[ \t]*<link rel="icon"[^>]*href="[^"]*"[^>]*>[ \t]*$/m, `    <link rel="icon" type="image/png" href="${toPublicAssetPath(manifest.assets.brandMarkPng)}" />`)
+    .replace(/^[ \t]*<title>.*<\/title>[ \t]*$/m, `    <title>${manifest.windowTitles.main}</title>`)
   await fs.writeFile(FRONTEND_INDEX_HTML_PATH, next)
 }
 
@@ -436,6 +436,10 @@ async function collectFiles(targetPath) {
 function buildQuotedContainsPattern(value) {
   const escaped = escapeRegExp(value)
   return new RegExp(`(['"\`])(?:\\\\.|(?!\\1)[^\\\\\\r\\n])*${escaped}(?:\\\\.|(?!\\1)[^\\\\\\r\\n])*\\1`)
+}
+
+function isGeneratedPythonCache(filePath) {
+  return filePath.endsWith('.pyc') || path.relative(PROJECT_ROOT, filePath).split(path.sep).includes('__pycache__')
 }
 
 async function validateExecutableBrandingResidue(manifest) {
@@ -490,6 +494,7 @@ async function validateExecutableBrandingResidue(manifest) {
 
   for (const filePath of files) {
     if (allowedFiles.has(filePath)) continue
+    if (isGeneratedPythonCache(filePath)) continue
     const content = await fs.readFile(filePath, 'utf8')
     for (const [label, pattern] of patterns) {
       if (pattern.test(content)) {

@@ -1,4 +1,5 @@
 import { SetupIcon, ShieldIcon, WarningIcon } from '../../components/BrandIcons'
+import { DISPLAY_NAME } from '../../../shared/branding'
 import type { AppConfig, SensitiveTargetRule, SmartContext } from '../../types'
 import {
   ContextField,
@@ -73,7 +74,7 @@ export function PrivacySection({
           <div className="grid gap-3 sm:grid-cols-2">
             <ToggleCard
               title="Restore clipboard after paste"
-              description="Put your previous clipboard contents back right after SteerVox pastes the result."
+              description={`Put your previous clipboard contents back right after ${DISPLAY_NAME} pastes the result.`}
               checked={draftConfig.privacy.restore_clipboard_after_paste}
               onChange={onSetRestoreClipboardAfterPaste}
             />
@@ -248,7 +249,7 @@ export function PrivacySection({
             Smart captures the frontmost app and window when recording starts, then adds browser hostname, a sanitized page path, and focused field metadata like the field label or placeholder when available. Referential commands can also use selected text or clipboard text.
           </div>
           <div className="rounded-2xl border border-white/6 bg-white/[0.02] p-4 text-sm leading-7 text-text-secondary">
-            Browser details are best-effort and fall back cleanly when unavailable. SteerVox does not read the existing contents of the focused field. Query strings, fragments, and full page content stay out of the Smart payload unless you explicitly work from selected or clipboard text.
+            Browser details are best-effort and fall back cleanly when unavailable. {DISPLAY_NAME} does not read the existing contents of the focused field. Query strings, fragments, and full page content stay out of the Smart payload unless you explicitly work from selected or clipboard text.
           </div>
         </div>
       </SectionCard>

@@ -1,4 +1,5 @@
 import { RefreshIcon, SetupIcon, WaveIcon } from '../../components/BrandIcons'
+import { DISPLAY_NAME } from '../../../shared/branding'
 import type { DesktopLogKind, DesktopLogSnapshot, HistoryItem, Skill } from '../../types'
 import {
   FooterButton,
@@ -224,14 +225,14 @@ export function AdvancedWindowBehaviorSection({
     <SectionCard
       title="Window behavior"
       icon={<SetupIcon size={18} />}
-      description="Keep SteerVox as a tray-first background app unless you explicitly open a window."
+      description={`Keep ${DISPLAY_NAME} as a tray-first background app unless you explicitly open a window.`}
       collapsible
       defaultOpen={false}
     >
       <div className="grid gap-4">
         <ToggleCard
           title="Background only"
-          description="Hide the dock icon and keep SteerVox tray-first. Hotkeys stay active and windows only appear when you explicitly open them."
+          description={`Hide the dock icon and keep ${DISPLAY_NAME} tray-first. Hotkeys stay active and windows only appear when you explicitly open them.`}
           checked={backgroundOnly}
           onChange={onSetBackgroundOnly}
         />
