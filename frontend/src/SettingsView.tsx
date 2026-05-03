@@ -1992,11 +1992,11 @@ export const SettingsView = () => {
       animate={{ opacity: 1, y: 0 }}
       transition={{ duration: 0.26, ease: [0.22, 1, 0.36, 1] }}
     >
-      <div className="soft-divider border-b px-6 py-3.5 lg:px-8">
+      <div className="soft-divider border-b px-5 py-3 lg:px-7">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
-            <div className="text-[11px] uppercase tracking-[0.3em] text-text-muted">Settings</div>
-            <h1 className="mt-1 text-[24px] font-semibold tracking-[-0.03em] text-text-primary">Settings</h1>
+            <div className="text-[11px] uppercase tracking-[0.18em] text-text-muted">Settings</div>
+            <h1 className="mt-1 text-[22px] font-semibold text-text-primary">Settings</h1>
             <p className="mt-1 max-w-xl text-[13px] leading-5 text-text-secondary">Voice, Smart, privacy, and advanced controls.</p>
           </div>
           <div className="flex flex-wrap items-center gap-1.5">
@@ -2005,7 +2005,7 @@ export const SettingsView = () => {
           </div>
         </div>
         {hasBackendAttention ? (
-          <div className="mt-4 rounded-[22px] border border-semantic-error/18 bg-[linear-gradient(180deg,rgba(57,17,23,0.56),rgba(21,12,16,0.84))] px-4 py-3.5 shadow-[0_14px_40px_rgba(0,0,0,0.2)]">
+          <div className="mt-4 rounded-xl border border-semantic-error/18 bg-[linear-gradient(180deg,rgba(57,17,23,0.56),rgba(21,12,16,0.84))] px-4 py-3.5 shadow-[0_10px_28px_rgba(0,0,0,0.18)]">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div className="min-w-0 flex-1">
                 <div className="flex items-center gap-2 text-semantic-error">
@@ -2029,23 +2029,23 @@ export const SettingsView = () => {
         ) : null}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden px-6 py-4 lg:px-8">
-        <div className="mx-auto flex h-full max-w-7xl gap-4">
+      <div className="min-h-0 flex-1 overflow-hidden px-5 py-4 lg:px-7">
+        <div className="mx-auto flex h-full max-w-7xl gap-3">
           <aside
-            className={`settings-sidebar flex shrink-0 flex-col overflow-hidden rounded-[24px] border border-white/7 p-2.5 transition-[width] duration-200 ${sidebarCollapsed ? 'w-[82px]' : 'w-[254px]'
+            className={`settings-sidebar flex shrink-0 flex-col overflow-hidden rounded-xl border border-white/7 p-2 transition-[width] duration-200 ${sidebarCollapsed ? 'w-[76px]' : 'w-[238px]'
               }`}
           >
             <div className={`mb-2 flex items-center ${sidebarCollapsed ? 'justify-center' : 'justify-between'} gap-2 px-2`}>
               {!sidebarCollapsed ? (
                 <div>
-                  <div className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Sections</div>
+                  <div className="text-[11px] uppercase tracking-[0.18em] text-text-muted">Sections</div>
                   <div className="mt-1 text-sm font-medium text-text-primary">Settings</div>
                 </div>
               ) : null}
               <button
                 type="button"
                 onClick={() => setSidebarCollapsed((current) => !current)}
-                className="settings-sidebar-toggle flex h-9 w-9 items-center justify-center rounded-full border border-white/8 text-text-secondary transition-colors hover:bg-white/[0.06] hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-primary/45 focus-visible:ring-offset-2 focus-visible:ring-offset-[#091018]"
+                className="settings-sidebar-toggle flex h-8 w-8 items-center justify-center rounded-lg border border-white/8 text-text-secondary transition-colors hover:bg-white/[0.06] hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-focus/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#091018]"
                 title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
                 aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
               >
@@ -2078,14 +2078,14 @@ export const SettingsView = () => {
 
           </aside>
 
-          <div className="settings-content-shell min-w-0 flex-1 overflow-hidden rounded-[26px] border border-white/7">
+          <div className="settings-content-shell min-w-0 flex-1 overflow-hidden rounded-xl border border-white/7">
             <div className={`h-full overflow-y-auto px-1 ${showActionBar ? 'pb-8' : 'pb-0'}`}>
               <div className="flex flex-col gap-4 px-4 py-3.5 lg:px-5">
-                <section className="section-intro-panel rounded-[20px] border border-white/6 px-4 py-2.5">
+                <section className="section-intro-panel rounded-xl border border-white/6 px-4 py-2.5">
                   <div className="flex flex-wrap items-center justify-between gap-3">
                     <div>
-                      <div className="text-[11px] uppercase tracking-[0.24em] text-text-muted">{STEPS.find((step) => step.id === activeStep)?.eyebrow}</div>
-                      <div className="mt-1 text-[15px] font-semibold tracking-[-0.02em] text-text-primary">{activeStepDetail.title}</div>
+                      <div className="text-[11px] uppercase tracking-[0.18em] text-text-muted">{STEPS.find((step) => step.id === activeStep)?.eyebrow}</div>
+                      <div className="mt-1 text-[15px] font-semibold text-text-primary">{activeStepDetail.title}</div>
                     </div>
                     <StatusBadge label={STEPS.find((step) => step.id === activeStep)?.label || 'Section'} tone="neutral" />
                   </div>
@@ -2101,7 +2101,7 @@ export const SettingsView = () => {
                     className="flex flex-col gap-5"
                   >
                     {activeStepDeferredMessages.length ? (
-                      <section className="rounded-[22px] border border-semantic-warning/20 bg-semantic-warning/8 px-4 py-4">
+                      <section className="rounded-xl border border-semantic-warning/20 bg-semantic-warning/8 px-4 py-4">
                         <div className="flex flex-wrap items-start justify-between gap-3">
                           <div>
                             <div className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Partial refresh</div>

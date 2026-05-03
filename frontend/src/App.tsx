@@ -25,7 +25,7 @@ const MAIN_NAV_ITEMS = [
 function RouteFallback() {
   return (
     <div className="flex h-full items-center justify-center px-6 py-6">
-      <div className="section-intro-panel rounded-[24px] border border-white/8 px-5 py-4 text-center text-sm leading-6 text-text-secondary">
+      <div className="section-intro-panel rounded-xl border border-white/8 px-5 py-4 text-center text-sm leading-6 text-text-secondary">
         Loading view...
       </div>
     </div>
@@ -103,26 +103,26 @@ function AppShell() {
   return (
     <div className="workspace-shell flex h-full w-full flex-col overflow-hidden">
       <div className="workspace-titlebar soft-divider border-b">
-        <div className={`titlebar-drag flex h-[74px] items-center justify-between gap-4 pr-4 ${isMac ? 'pl-[88px]' : 'px-4'}`}>
+        <div className={`titlebar-drag flex h-[58px] items-center justify-between gap-3 pr-3 ${isMac ? 'pl-[82px]' : 'px-3'}`}>
           <div className="flex min-w-0 items-center gap-3">
-            <div className="flex h-11 w-11 items-center justify-center">
-              <BrandMark size={36} className="drop-shadow-[0_8px_18px_rgba(0,0,0,0.18)]" />
+            <div className="flex h-9 w-9 items-center justify-center">
+              <BrandMark size={30} className="drop-shadow-[0_6px_12px_rgba(0,0,0,0.16)]" />
             </div>
             <div className="min-w-0">
-              <div className="truncate text-[15px] font-semibold tracking-[-0.02em] text-text-primary">{DISPLAY_NAME}</div>
+              <div className="truncate text-[14px] font-semibold text-text-primary">{DISPLAY_NAME}</div>
               <div className="truncate text-[11px] text-text-secondary">{TAGLINE}</div>
             </div>
           </div>
 
-          <div className="titlebar-nodrag flex items-center gap-3">
-            <div className="workspace-segmented flex items-center gap-1 rounded-full p-1">
+          <div className="titlebar-nodrag flex items-center gap-2">
+            <div className="workspace-segmented flex items-center gap-1 rounded-xl p-1">
               {MAIN_NAV_ITEMS.map((item) => (
                 <NavLink
                   key={item.to}
                   to={item.to}
                   end={item.end}
                   className={({ isActive }) =>
-                    `inline-flex items-center gap-2 rounded-full px-4 py-2 text-sm font-medium transition-colors ${
+                    `inline-flex min-h-9 items-center gap-2 rounded-lg px-3 py-1.5 text-[13px] font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-focus/80 ${
                       isActive
                         ? 'workspace-tab-active text-text-primary'
                         : 'workspace-tab text-text-secondary hover:text-text-primary'
@@ -138,16 +138,20 @@ function AppShell() {
             {!isMac ? (
               <div className="flex items-center gap-1.5">
                 <button
+                  type="button"
                   onClick={handleMinimize}
-                  className="flex h-8 w-8 items-center justify-center rounded-xl text-text-muted transition-colors hover:bg-white/8 hover:text-text-primary"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-white/8 hover:text-text-primary"
                   title="Minimize"
+                  aria-label="Minimize"
                 >
                   <WindowMinimizeIcon size={14} />
                 </button>
                 <button
+                  type="button"
                   onClick={handleClose}
-                  className="flex h-8 w-8 items-center justify-center rounded-xl text-text-muted transition-colors hover:bg-semantic-error/20 hover:text-white"
+                  className="flex h-8 w-8 items-center justify-center rounded-lg text-text-muted transition-colors hover:bg-semantic-error/20 hover:text-white"
                   title="Close"
+                  aria-label="Close"
                 >
                   <WindowCloseIcon size={14} />
                 </button>

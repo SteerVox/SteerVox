@@ -54,13 +54,13 @@ export function SidebarSectionButton({
       aria-current={active ? 'page' : undefined}
       aria-pressed={active}
       aria-label={collapsed ? label : undefined}
-      className={`settings-sidebar-item flex items-center gap-3 rounded-2xl px-3 py-3 text-left transition-colors ${active
+      className={`settings-sidebar-item flex items-center gap-3 rounded-xl px-3 py-2.5 text-left transition-colors ${active
         ? 'settings-sidebar-item-active'
         : 'text-text-secondary hover:text-text-primary'
       } ${collapsed ? 'justify-center' : ''} focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/25 focus-visible:ring-offset-2 focus-visible:ring-offset-[#161920]`}
     >
       <div
-        className={`widget-control flex h-9 w-9 shrink-0 items-center justify-center rounded-full ${active
+        className={`widget-control flex h-8 w-8 shrink-0 items-center justify-center rounded-lg ${active
           ? 'text-text-primary'
           : 'text-text-muted'
         }`}
@@ -180,7 +180,7 @@ export function InfoDisclosure({
               width: position.width,
               transform: position.placement === 'top' ? 'translateY(-100%)' : undefined,
             }}
-            className="z-[120] rounded-2xl border border-white/10 bg-[linear-gradient(180deg,rgba(35,39,47,0.96),rgba(19,22,28,0.98))] p-3 text-xs leading-6 text-text-secondary shadow-[0_18px_36px_rgba(0,0,0,0.28)] backdrop-blur-xl"
+            className="z-[120] rounded-xl border border-white/10 bg-[linear-gradient(180deg,rgba(35,39,47,0.96),rgba(19,22,28,0.98))] p-3 text-xs leading-6 text-text-secondary shadow-[0_14px_28px_rgba(0,0,0,0.24)] backdrop-blur-xl"
           >
             {children}
           </div>,
@@ -218,8 +218,8 @@ export function SwitchControl({
         if (disabled) return
         onChange(!checked)
       }}
-      className={`relative inline-flex shrink-0 items-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/25 focus-visible:ring-offset-2 focus-visible:ring-offset-[#161920] ${compact ? 'h-6 w-10' : 'h-7 w-12'} ${checked
-        ? 'border-accent-primary/30 bg-accent-primary/30'
+      className={`relative inline-flex shrink-0 items-center rounded-full border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-focus/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#161920] ${compact ? 'h-6 w-10' : 'h-7 w-12'} ${checked
+        ? 'border-accent-focus/40 bg-accent-focus/80'
         : 'border-white/10 bg-white/[0.05] hover:border-white/16 hover:bg-white/[0.08]'
       } ${disabled ? 'cursor-not-allowed opacity-45 hover:border-white/10 hover:bg-white/[0.05]' : ''}`}
     >
@@ -247,7 +247,7 @@ export function ToggleCard({
   disabled?: boolean
 }) {
   return (
-    <div className={`flex items-start justify-between gap-4 rounded-2xl border border-white/6 bg-white/[0.02] p-4 ${disabled ? 'opacity-70' : ''}`}>
+    <div className={`flex items-start justify-between gap-4 rounded-xl border border-white/6 bg-white/[0.02] p-4 ${disabled ? 'opacity-70' : ''}`}>
       <div>
         <div className="text-sm font-medium text-text-primary">{title}</div>
         <p className="mt-2 text-sm leading-6 text-text-secondary">{description}</p>
@@ -301,7 +301,7 @@ export function SectionCard({
       <div className="mb-4 flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="flex items-center gap-3 text-sm font-semibold text-text-primary">
-            <div className="flex h-8 w-8 items-center justify-center rounded-xl border border-white/8 bg-white/[0.035] text-text-primary/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+            <div className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/8 bg-white/[0.035] text-text-primary/90 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
               {icon}
             </div>
             <span>{title}</span>
@@ -319,7 +319,7 @@ export function SectionCard({
               type="button"
               onClick={() => setOpen((current) => !current)}
               aria-expanded={open}
-              className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/8 bg-white/[0.03] text-text-muted transition-colors hover:border-white/12 hover:bg-white/[0.05] hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/25 focus-visible:ring-offset-2 focus-visible:ring-offset-[#161920]"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/8 bg-white/[0.03] text-text-muted transition-colors hover:border-white/12 hover:bg-white/[0.05] hover:text-text-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-focus/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#161920]"
               title={open ? 'Collapse section' : 'Expand section'}
             >
               <ArrowRightIcon size={14} className={`transition-transform duration-200 ${open ? 'rotate-90' : 'rotate-0'}`} />
@@ -344,7 +344,7 @@ export function LogPathCard({
   }
 
   return (
-    <div className="group relative rounded-2xl border border-white/6 bg-white/[0.02] p-4">
+    <div className="group relative rounded-xl border border-white/6 bg-white/[0.02] p-4">
       <div className="text-[11px] uppercase tracking-[0.26em] text-text-muted">{label}</div>
       <code className="mt-3 block break-all rounded-xl bg-black/35 px-3 py-2 text-xs text-text-primary">{path}</code>
       <button
@@ -375,7 +375,7 @@ export function LiveLogViewer({
       : 'This log file has not been created yet.'
 
   return (
-    <div className="rounded-[24px] border border-white/6 bg-black/20 p-4">
+    <div className="rounded-xl border border-white/6 bg-black/20 p-4">
       <div className="flex flex-wrap items-center gap-2">
         {(['backend', 'electron'] as DesktopLogKind[]).map((kind) => {
           const selected = kind === activeKind
@@ -429,7 +429,7 @@ export function PermissionCard({
   action?: ReactNode
 }) {
   return (
-    <div className="section-intro-panel h-full rounded-2xl border border-white/6 p-4">
+    <div className="section-intro-panel h-full rounded-xl border border-white/6 p-4">
       <div className="flex items-start justify-between gap-3">
         <div>
           <h3 className="text-sm font-medium text-text-primary">{title}</h3>
@@ -470,7 +470,7 @@ export function ProviderPicker({
               aria-pressed={active}
               onClick={() => onChange(option.id)}
               title={`${option.name}: ${option.desc}`}
-              className={`h-full overflow-hidden rounded-2xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/25 focus-visible:ring-offset-2 focus-visible:ring-offset-[#161920] ${active
+              className={`h-full overflow-hidden rounded-xl border p-4 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-focus/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#161920] ${active
                 ? 'border-white/14 bg-white/[0.08] shadow-[0_10px_24px_rgba(0,0,0,0.12)]'
                 : 'border-white/6 bg-white/[0.02] hover:border-white/12 hover:bg-white/[0.04]'
               }`}
@@ -493,7 +493,7 @@ export function ProviderPicker({
 
 export function ContextField({ label, value }: { label: string; value: string | null | undefined }) {
   return (
-    <div className="rounded-2xl border border-white/6 bg-white/[0.02] p-4">
+    <div className="rounded-xl border border-white/6 bg-white/[0.02] p-4">
       <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">{label}</div>
       <div className="mt-2 break-all font-mono text-sm text-text-primary">{value || 'Unknown'}</div>
     </div>
@@ -510,7 +510,7 @@ export function OptionalContextField({
   emptyLabel: string
 }) {
   return (
-    <div className="rounded-2xl border border-white/6 bg-white/[0.02] p-4">
+    <div className="rounded-xl border border-white/6 bg-white/[0.02] p-4">
       <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">{label}</div>
       <div className="mt-2 break-all font-mono text-sm text-text-primary">{value || emptyLabel}</div>
     </div>
@@ -527,7 +527,7 @@ export function ReadOnlyShortcut({
   description: string
 }) {
   return (
-    <div className="rounded-2xl border border-white/6 bg-white/[0.02] p-4">
+    <div className="rounded-xl border border-white/6 bg-white/[0.02] p-4">
       <div className="flex items-center justify-between gap-3">
         <h3 className="text-sm font-medium text-text-primary">{title}</h3>
         <kbd className="rounded-xl border border-white/10 bg-white/[0.05] px-2.5 py-1 font-mono text-xs text-text-primary">
@@ -547,7 +547,7 @@ export function InspectorField({
   value: string
 }) {
   return (
-    <div className="rounded-2xl border border-white/6 bg-white/[0.02] p-4">
+    <div className="rounded-xl border border-white/6 bg-white/[0.02] p-4">
       <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">{label}</div>
       <div className="mt-2 break-all text-sm leading-6 text-text-primary">{value}</div>
     </div>
@@ -564,7 +564,7 @@ export function UsageMetricCard({
   hint?: string
 }) {
   return (
-    <div className="rounded-2xl border border-white/6 bg-white/[0.02] p-4">
+    <div className="rounded-xl border border-white/6 bg-white/[0.02] p-4">
       <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">{label}</div>
       <div className="mt-2 text-xl font-semibold tracking-[-0.03em] text-text-primary">{value}</div>
       {hint ? <div className="mt-2 text-xs leading-5 text-text-secondary">{hint}</div> : null}
@@ -589,15 +589,15 @@ export function FooterButton({
     ? 'border-white/10 bg-[linear-gradient(180deg,rgba(255,255,255,0.16),rgba(255,255,255,0.08))] text-text-primary hover:bg-[linear-gradient(180deg,rgba(255,255,255,0.2),rgba(255,255,255,0.1))]'
     : 'border-white/8 bg-white/[0.03] text-text-primary hover:bg-white/[0.06]'
   const sizeClasses = size === 'compact'
-    ? 'rounded-xl px-3 py-2 text-xs'
-    : 'rounded-2xl px-4 py-2.5 text-sm font-medium'
+    ? 'rounded-lg px-3 py-2 text-xs'
+    : 'rounded-lg px-4 py-2.5 text-sm font-medium'
 
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={`inline-flex shrink-0 items-center justify-center whitespace-nowrap border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/25 focus-visible:ring-offset-2 focus-visible:ring-offset-[#161920] disabled:cursor-not-allowed disabled:opacity-45 ${sizeClasses} ${classes}`}
+      className={`inline-flex min-h-9 shrink-0 items-center justify-center whitespace-nowrap border transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-focus/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#161920] disabled:cursor-not-allowed disabled:opacity-45 ${sizeClasses} ${classes}`}
     >
       {children}
     </button>

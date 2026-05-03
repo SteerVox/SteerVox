@@ -69,15 +69,15 @@ function ActionButton({
     <button
       type="button"
       onClick={onClick}
-      className="glass-card group rounded-[28px] p-5 text-left transition-transform hover:-translate-y-0.5"
+      className="glass-card group min-h-[148px] p-5 text-left transition-colors hover:border-white/14 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent-focus/80 focus-visible:ring-offset-2 focus-visible:ring-offset-[#161920]"
     >
       <div className="flex items-start justify-between gap-4">
-        <div className="widget-control flex h-11 w-11 items-center justify-center rounded-2xl text-text-primary">
+        <div className="widget-control flex h-10 w-10 items-center justify-center rounded-lg text-text-primary">
           {icon}
         </div>
-        <ArrowRightIcon size={16} className="text-text-muted transition-transform group-hover:translate-x-0.5 group-hover:text-text-primary" />
+        <ArrowRightIcon size={16} className="text-text-muted transition-colors group-hover:text-text-primary" />
       </div>
-      <div className="mt-5 text-lg font-semibold tracking-[-0.02em] text-text-primary">{title}</div>
+      <div className="mt-5 text-lg font-semibold text-text-primary">{title}</div>
       <p className="mt-2 text-sm leading-6 text-text-secondary">{detail}</p>
     </button>
   )
@@ -93,7 +93,7 @@ function QuickStatusCard({
   tone: 'good' | 'warn' | 'danger' | 'neutral'
 }) {
   return (
-    <div className="section-intro-panel rounded-[22px] border border-white/6 p-4">
+    <div className="section-intro-panel rounded-xl border border-white/6 p-4">
       <div className="flex items-center justify-between gap-3">
         <div className="text-sm font-medium text-text-primary">{label}</div>
         <StatusPill label={tone === 'good' ? 'Ready' : tone === 'warn' ? 'Attention' : tone === 'danger' ? 'Blocked' : 'Idle'} tone={tone} />
@@ -111,7 +111,7 @@ function ExampleCard({
   example: string
 }) {
   return (
-    <div className="rounded-2xl border border-white/6 bg-black/22 p-4">
+    <div className="rounded-xl border border-white/6 bg-black/22 p-4">
       <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">{title}</div>
       <div className="mt-3 font-mono text-sm leading-7 text-text-primary">{example}</div>
     </div>
@@ -130,7 +130,7 @@ function ChecklistRow({
   action?: ReactNode
 }) {
   return (
-    <div className={`rounded-2xl border p-4 ${completed ? 'border-semantic-success/20 bg-semantic-success/8' : 'border-white/6 bg-white/[0.02]'}`}>
+    <div className={`rounded-xl border p-4 ${completed ? 'border-semantic-success/20 bg-semantic-success/8' : 'border-white/6 bg-white/[0.02]'}`}>
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <div className="flex items-center gap-2">
@@ -347,14 +347,14 @@ export function HomeView() {
   if (connectionState === 'error' && !config) {
     return (
       <div className="flex h-full items-center justify-center px-8">
-        <div className="w-full max-w-xl rounded-[28px] border border-semantic-error/20 bg-[linear-gradient(180deg,rgba(42,11,18,0.75),rgba(11,8,12,0.9))] p-8">
+        <div className="w-full max-w-xl rounded-xl border border-semantic-error/20 bg-[linear-gradient(180deg,rgba(42,11,18,0.75),rgba(11,8,12,0.9))] p-8">
           <div className="text-lg font-semibold text-text-primary">{`${DISPLAY_NAME} is not ready`}</div>
           <p className="mt-3 text-sm leading-7 text-text-secondary">{connectionError || 'Unable to load the current workspace.'}</p>
           <div className="mt-6">
             <button
               type="button"
               onClick={() => void refreshRuntimeLocalEnvironment()}
-              className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+              className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
             >
               Try again
             </button>
@@ -365,12 +365,12 @@ export function HomeView() {
   }
 
   return (
-    <div className="h-full overflow-y-auto px-8 py-6">
+    <div className="h-full overflow-y-auto px-6 py-5 lg:px-8">
       <div className="mx-auto max-w-6xl pb-10">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
             <div className="text-[11px] uppercase tracking-[0.3em] text-text-muted">Home</div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-text-primary">Talk, polish, and keep moving.</h1>
+            <h1 className="mt-2 text-[28px] font-semibold text-text-primary">Talk, polish, and keep moving.</h1>
             <p className="mt-3 max-w-3xl text-sm leading-7 text-text-secondary">
               {`${DISPLAY_NAME} is ready when voice capture, paste, and your provider choices are aligned. Use this screen for the daily path and keep the heavier controls in Settings.`}
             </p>
@@ -384,13 +384,13 @@ export function HomeView() {
         </div>
 
         {actionError || connectionError || environmentMessage ? (
-          <div className="mt-6 rounded-2xl border border-semantic-warning/20 bg-semantic-warning/8 px-4 py-3 text-sm leading-6 text-text-secondary">
+          <div className="mt-5 rounded-xl border border-semantic-warning/20 bg-semantic-warning/8 px-4 py-3 text-sm leading-6 text-text-secondary">
             {actionError || connectionError || environmentMessage}
           </div>
         ) : null}
 
         {launchContext?.is_packaged ? (
-          <div className="mt-6 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
+          <div className="mt-5 rounded-xl border border-white/8 bg-white/[0.03] px-4 py-3">
             <div className="flex flex-wrap items-start justify-between gap-3">
               <div>
                 <div className="text-[11px] uppercase tracking-[0.24em] text-text-muted">Public beta</div>
@@ -403,7 +403,7 @@ export function HomeView() {
           </div>
         ) : null}
 
-        <section className="mt-6 grid gap-5 lg:grid-cols-3">
+        <section className="mt-5 grid gap-4 lg:grid-cols-3">
           <ActionButton
             title={isDictationRecording ? 'Stop dictation' : 'Dictate'}
             detail={isDictationRecording ? 'Recording right now. Stop when you are ready to paste.' : 'Capture speech and paste it back into the app you were using.'}
@@ -425,7 +425,7 @@ export function HomeView() {
         </section>
 
         {readinessState ? (
-          <section className="mt-8">
+          <section className="mt-7">
             <div className="mb-4 flex items-center justify-between gap-4">
               <div>
                 <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">Readiness</div>
@@ -458,7 +458,7 @@ export function HomeView() {
         ) : null}
 
         {showChecklist && onboardingState ? (
-          <section className="mt-8 glass-card p-6">
+          <section className="mt-7 glass-card p-5">
             <div className="flex flex-wrap items-start justify-between gap-4">
               <div>
                 <div className="text-[11px] uppercase tracking-[0.28em] text-text-muted">First success</div>
@@ -480,7 +480,7 @@ export function HomeView() {
                     <button
                       type="button"
                       onClick={() => navigate(buildSettingsRoute('voice'))}
-                      className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                      className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                     >
                       Open install steps
                     </button>
@@ -495,7 +495,7 @@ export function HomeView() {
                   <button
                     type="button"
                     onClick={() => void requestMicrophone()}
-                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                    className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                   >
                     Enable microphone
                   </button>
@@ -509,7 +509,7 @@ export function HomeView() {
                   <button
                     type="button"
                     onClick={() => void requestAccessibility()}
-                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                    className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                   >
                     Enable Accessibility
                   </button>
@@ -523,7 +523,7 @@ export function HomeView() {
                   <button
                     type="button"
                     onClick={() => navigate(buildSettingsRoute('voice'))}
-                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                    className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                   >
                     Open voice settings
                   </button>
@@ -537,7 +537,7 @@ export function HomeView() {
                   <button
                     type="button"
                     onClick={() => void toggleRecording('dictation')}
-                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                    className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                   >
                     {isDictationRecording ? 'Stop dictation' : 'Start dictation'}
                   </button>
@@ -551,7 +551,7 @@ export function HomeView() {
                   <button
                     type="button"
                     onClick={() => navigate(buildSettingsRoute('rewrite'))}
-                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                    className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                   >
                     Open Smart settings
                   </button>
@@ -565,7 +565,7 @@ export function HomeView() {
                   <button
                     type="button"
                     onClick={() => void toggleRecording('smart_transform')}
-                    className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                    className="rounded-lg border border-white/8 bg-white/[0.04] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                   >
                     {isRewriteRecording ? 'Stop Smart' : 'Start Smart'}
                   </button>
@@ -578,7 +578,7 @@ export function HomeView() {
                 <button
                   type="button"
                   onClick={() => void dismissPackagedOnboarding()}
-                  className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.06]"
+                  className="rounded-lg border border-white/8 bg-white/[0.03] px-4 py-2.5 text-sm font-medium text-text-primary transition-colors hover:bg-white/[0.06]"
                 >
                   Continue later
                 </button>
@@ -586,7 +586,7 @@ export function HomeView() {
                   type="button"
                   onClick={() => void completePackagedOnboarding()}
                   disabled={!packagedOnboardingReady}
-                  className="rounded-2xl border border-accent-primary/20 bg-accent-primary px-4 py-2.5 text-sm font-medium text-[#021318] transition-colors hover:bg-[#46f0f4] disabled:cursor-not-allowed disabled:opacity-45"
+                  className="rounded-lg border border-accent-primary/20 bg-accent-primary px-4 py-2.5 text-sm font-medium text-[#021318] transition-colors hover:bg-[#46f0f4] disabled:cursor-not-allowed disabled:opacity-45"
                 >
                   {packagedOnboardingReady ? 'Finish setup' : 'Finish after install, Dictation, and Smart'}
                 </button>
@@ -625,14 +625,14 @@ export function HomeView() {
                 <button
                   type="button"
                   onClick={() => void loadRecentActivity()}
-                  className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-2 text-xs font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                  className="rounded-lg border border-white/8 bg-white/[0.04] px-3 py-2 text-xs font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                 >
                   Refresh
                 </button>
                 <button
                   type="button"
                   onClick={() => navigate(buildLibraryRoute())}
-                  className="rounded-2xl border border-white/8 bg-white/[0.04] px-3 py-2 text-xs font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
+                  className="rounded-lg border border-white/8 bg-white/[0.04] px-3 py-2 text-xs font-medium text-text-primary transition-colors hover:bg-white/[0.08]"
                 >
                   Open Library
                 </button>
@@ -640,7 +640,7 @@ export function HomeView() {
             </div>
 
             {recentState.error ? (
-              <div className="mt-4 rounded-2xl border border-semantic-warning/20 bg-semantic-warning/8 px-4 py-3 text-sm leading-6 text-text-secondary">
+              <div className="mt-4 rounded-lg border border-semantic-warning/20 bg-semantic-warning/8 px-4 py-3 text-sm leading-6 text-text-secondary">
                 {recentState.error}
               </div>
             ) : null}
@@ -651,7 +651,7 @@ export function HomeView() {
                   key={item.id}
                   type="button"
                   onClick={() => navigate(buildLibraryRoute(item.source_type === 'note' ? 'notes' : 'runs'))}
-                  className="w-full rounded-2xl border border-white/6 bg-black/20 px-4 py-3 text-left transition-colors hover:bg-black/26"
+                  className="w-full rounded-lg border border-white/6 bg-black/20 px-4 py-3 text-left transition-colors hover:bg-black/26"
                 >
                   <div className="flex items-center justify-between gap-3">
                     <div className="truncate text-[11px] uppercase tracking-[0.18em] text-text-muted">{item.metadata.app_name}</div>
@@ -661,7 +661,7 @@ export function HomeView() {
                   <div className="mt-2 text-[11px] uppercase tracking-[0.18em] text-text-secondary">{formatLibraryItemLabel(item)}</div>
                 </button>
               )) : (
-                <div className="rounded-2xl border border-dashed border-white/10 bg-black/20 px-4 py-5 text-sm leading-6 text-text-secondary">
+                <div className="rounded-lg border border-dashed border-white/10 bg-black/20 px-4 py-5 text-sm leading-6 text-text-secondary">
                   Your saved notes and recent runs will show up here after the first dictation or rewrite.
                 </div>
               )}
