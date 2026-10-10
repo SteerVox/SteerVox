@@ -10,7 +10,7 @@ SteerVox is source-available under the [SteerVox Limited Commercial Source Licen
 
 ## Highlights
 
-- Dictate directly into any app with a global shortcut.
+- Dictate directly into any app with a global shortcut Ctrl+D for dictate Ctrl+S for smart mode.
 - Use Smart Mode to rewrite, summarize, format, or route spoken text.
 - Use selected text, clipboard text, app metadata, and optional screen context for higher-quality rewrites.
 - Keep settings, notes, local memory, templates, history, logs, and secrets on your Mac.
