@@ -80,7 +80,7 @@ Generated native helper binaries, Swift module caches, local notes, local strate
 ## Quick Start
 
 ```bash
-git clone https://github.com/<your-org>/SteerVox.git
+git clone https://github.com/SteerVox/SteerVox.git
 cd SteerVox
 ./scripts/setup-dev.sh
 cd frontend
